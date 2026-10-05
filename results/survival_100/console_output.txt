@@ -1,0 +1,17 @@
+== 第一步：检查缺失模式（这是本分析最重要的一张表）==
+97 个患者中 71 个有完整生存记录，26 个因无随访时间被剔除
+被剔除病例的构成：
+label  vital
+LUAD   Alive    26
+→ 26 例被剔除者全是 Alive 的 LUAD！缺失不是随机的：它们都活着，剔除后 LUAD 曲线必然假性偏糟。
+
+== 分期 KM（主分析）==
+各期例数: {'I': 39, 'II': 17, 'III': 11, 'IV': 2}
+Stage I vs III: log-rank p=0.15（曲线方向正确；样本量小未达显著，符合预期）
+
+== LUAD vs LUSC（教学演示，结论无效）==
+表面上: LUAD 中位 0.9 年 vs LUSC 3.7 年, p=0.000
+但这个"显著差异"完全是缺失数据造成的假象——被剔除的 26 例全是活着的 LUAD。
+教训：KM 之前先按 标签×结局 交叉检查缺失构成，缺失不随机时任何曲线都可能撒谎。
+
+✅ 图已保存: E:/Projects/DP/CLAM-tutorial/results/survival/km_by_stage.png, E:/Projects/DP/CLAM-tutorial/results/survival/km_luad_vs_lusc.png

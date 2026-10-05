@@ -1,0 +1,26 @@
+# ===== 大数据：本地可再生，不入库 =====
+# 原始切片 ~96GB（用 scripts/download_tcga.py 重新下载，断点续传）
+data/slides/
+# RNA-seq 表达谱 ~460MB（同一下载脚本会一并获取）
+data/metadata/*
+!data/metadata/clinical.json
+# 特征 44GB + patch 坐标 776MB（notebook §3 两步重新生成）
+results/tcga/features/
+results/tcga/patching/
+# 冒烟测试产物
+results/cmu_test/
+# 离线 wheel 安装包
+wheels/
+
+# ===== 系统杂项 =====
+__pycache__/
+*.pyc
+.DS_Store
+.gzh-compliance.json
+
+# 公众号文章草稿（本地，不入库）
+article/
+
+# 微信凭证（绝不入库）
+.baoyu-skills/
+article/.gzh-wechat.json*

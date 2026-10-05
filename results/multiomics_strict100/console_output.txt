@@ -1,0 +1,30 @@
+表达矩阵: 19938 个蛋白编码基因 × 97 个患者（114 个文件中匹配到标签的）
+
+== marker 基因 sanity check（log1p TPM 中位数, Mann-Whitney）==
+  NKX2-1  (LUAD（TTF-1，肺腺癌标志）): LUAD中位 4.87 vs LUSC中位 2.15, p=1.99e-11
+  TP63    (LUSC（鳞癌标志）): LUAD中位 1.54 vs LUSC中位 5.04, p=1.72e-11
+  KRT5    (LUSC（鳞癌角化）): LUAD中位 1.46 vs LUSC中位 7.75, p=3.27e-14
+  KRT6A   (LUSC（鳞癌角化）): LUAD中位 1.55 vs LUSC中位 7.77, p=6.47e-13
+
+== 计算形态嵌入（注意力池化 512 维，选折政策见 docstring 注释）==
+  25/100
+  50/100
+  75/100
+  100/100
+  选折来源统计: test折 45 张（零泄漏）/ val折 26 张（近似无泄漏） / 借用fold-0 29 张（泄漏，见下）
+形态嵌入: 97 患者 × 512 维（干净患者 69，含泄漏切片的患者 28）
+
+== 形态主成分 × marker 表达（Spearman 相关）==
+  NKX2-1 : 最强相关 PC1, r=-0.55, p=5.61e-09
+  TP63   : 最强相关 PC1, r=+0.49, p=3.19e-07
+  KRT5   : 最强相关 PC1, r=+0.58, p=4.56e-10
+  KRT6A  : 最强相关 PC1, r=+0.57, p=1.54e-09
+
+岭回归（形态 PC1-5 → NKX2-1 表达）5折CV R²: 0.11 ± 0.11
+（>0 说明形态里确实含有该基因表达的信息；数值温和属正常——形态只是表达的一个模糊投影）
+
+== 稳健性复核：剔除含泄漏切片的 28 个患者，仅用干净 n=69 ==
+  图右那对（PC1 × KRT5）：干净子集 r=+0.55, p=1.1e-06（全体 r=+0.58 → 方向/量级一致即说明结论不是泄漏造成的）
+  岭回归干净子集 5折CV R²: 0.17 ± 0.16（全体 0.11）
+
+✅ 图已保存: E:/Projects/DP/CLAM-tutorial/results/multiomics/markers_boxplot.png, E:/Projects/DP/CLAM-tutorial/results/multiomics/morph_vs_expr.png

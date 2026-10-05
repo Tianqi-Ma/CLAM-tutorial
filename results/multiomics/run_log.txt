@@ -1,0 +1,46 @@
+E:\Projects\DP\CLAM-tutorial\scripts\analysis_multiomics.py:57: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  ax.boxplot([a, b], labels=['LUAD', 'LUSC'], showfliers=False)
+E:\Projects\DP\CLAM-tutorial\scripts\analysis_multiomics.py:57: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  ax.boxplot([a, b], labels=['LUAD', 'LUSC'], showfliers=False)
+E:\Projects\DP\CLAM-tutorial\scripts\analysis_multiomics.py:57: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  ax.boxplot([a, b], labels=['LUAD', 'LUSC'], showfliers=False)
+E:\Projects\DP\CLAM-tutorial\scripts\analysis_multiomics.py:57: MatplotlibDeprecationWarning: The 'labels' parameter of boxplot() has been renamed 'tick_labels' since Matplotlib 3.9; support for the old name will be dropped in 3.11.
+  ax.boxplot([a, b], labels=['LUAD', 'LUSC'], showfliers=False)
+表达矩阵: 19938 个蛋白编码基因 × 144 个患者（114 个文件中匹配到标签的）
+
+== marker 基因 sanity check（log1p TPM 中位数, Mann-Whitney）==
+  NKX2-1  (LUAD（TTF-1，肺腺癌标志）): LUAD中位 4.87 vs LUSC中位 1.99, p=7.38e-16
+  TP63    (LUSC（鳞癌标志）): LUAD中位 1.13 vs LUSC中位 5.20, p=6.05e-18
+  KRT5    (LUSC（鳞癌角化）): LUAD中位 1.23 vs LUSC中位 7.83, p=3.22e-20
+  KRT6A   (LUSC（鳞癌角化）): LUAD中位 1.39 vs LUSC中位 7.99, p=1.31e-19
+
+== 计算形态嵌入（严格 k 折：每张切片用它当 test 那一折的模型，零泄漏）==
+Setting tau to 1.0
+Setting tau to 1.0
+Setting tau to 1.0
+Setting tau to 1.0
+Setting tau to 1.0
+  25/100
+  50/100
+  75/100
+  100/100
+  125/100
+  150/100
+  选折来源统计: test折 150 张（零泄漏）/ val折 0 张（近似无泄漏） / 借用fold-0 0 张（泄漏，见下）
+形态嵌入: 144 患者 × 512 维（干净患者 144，含泄漏切片的患者 0）
+嵌入已保存: morph_embeddings.csv (+_meta.csv)
+
+== 形态主成分 × marker 表达（Spearman 相关）==
+  NKX2-1 : 最强相关 PC3, r=+0.32, p=7.61e-05
+  TP63   : 最强相关 PC1, r=+0.35, p=2.09e-05
+  KRT5   : 最强相关 PC3, r=-0.35, p=2.18e-05
+  KRT6A  : 最强相关 PC1, r=+0.35, p=1.39e-05
+
+岭回归（形态 PC1-5 → NKX2-1 表达）5折CV R²: -0.09 ± 0.27
+（>0 说明形态里确实含有该基因表达的信息；数值温和属正常——形态只是表达的一个模糊投影）
+
+== 稳健性复核：剔除含泄漏切片的 0 个患者，仅用干净 n=144 ==
+  图右那对（PC1 × KRT6A）：干净子集 r=+0.35, p=1.4e-05（全体 r=+0.35 → 方向/量级一致即说明结论不是泄漏造成的）
+  岭回归干净子集 5折CV R²: -0.09 ± 0.27（全体 -0.09）
+
+✅ 图已保存: E:/Projects/DP/CLAM-tutorial/results/multiomics/markers_boxplot.png, E:/Projects/DP/CLAM-tutorial/results/multiomics/morph_vs_expr.png

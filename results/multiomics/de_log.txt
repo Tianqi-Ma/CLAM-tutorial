@@ -1,0 +1,55 @@
+表达矩阵: 19938 基因 × 144 患者（LUAD 70 / LUSC 74）
+低表达过滤后 15206 基因进入检验（4732 个两组都 <1 TPM 被剔除）
+  5000/15206 ...
+  10000/15206 ...
+  15000/15206 ...
+
+显著基因（FDR<0.05 且 |log2FC|>1）: 1526 个 = LUAD高 638 + LUSC高 888
+
+LUAD 高表达 top 8:
+          mean_LUAD  mean_LUSC  log2FC_LUAD_vs_LUSC             p          q_BH
+gene                                                                           
+RORC          30.33       5.04                2.374  2.601290e-18  2.081853e-15
+HNF1B         17.93       2.54                2.417  1.344245e-17  6.387686e-15
+CAPN8         59.01       7.19                2.873  1.544668e-17  6.971228e-15
+DDAH1         78.45      24.85                1.620  2.035047e-17  8.212238e-15
+SFTA2        468.96      56.89                3.021  2.106256e-17  8.212238e-15
+TMEM125      168.62      40.13                2.044  2.771771e-17  1.027989e-14
+BCL2L15        5.87       0.47                2.230  2.968034e-17  1.074570e-14
+ARHGEF38       7.42       1.49                1.759  3.288999e-17  1.163082e-14
+
+LUSC 高表达 top 8:
+           mean_LUAD  mean_LUSC  log2FC_LUAD_vs_LUSC             p          q_BH
+gene                                                                            
+DSG3            2.24     211.18               -6.035  3.480094e-22  5.291831e-18
+KRT74           0.03       2.06               -1.576  1.127610e-21  8.573219e-18
+SERPINB13       0.83      68.63               -5.248  4.793987e-21  1.822434e-17
+SPRR2E          0.36     176.49               -7.025  4.341754e-21  1.822434e-17
+CERS3           0.19      14.61               -3.717  8.794316e-21  2.674527e-17
+C10orf99        0.65      36.93               -4.527  2.454050e-20  5.392976e-17
+DSC3            3.83     135.77               -4.824  2.482627e-20  5.392976e-17
+KRT5          136.02    3498.81               -4.675  3.223562e-20  6.127186e-17
+  [自检] NKX2-1: log2FC=+2.04, q=1.2e-13（应与已知方向一致）
+  [自检] TP63: log2FC=-4.47, q=4.2e-15（应与已知方向一致）
+  [自检] KRT5: log2FC=-4.67, q=6.1e-17（应与已知方向一致）
+  [自检] KRT6A: log2FC=-6.09, q=2.0e-16（应与已知方向一致）
+
+火山图 -> de_volcano.png
+
+== Enrichr：LUAD 方向 top 200 基因 ==
+  [Hallmark] Estrogen Response Early: q=2.9e-03, 命中 9 基因
+  [Hallmark] Estrogen Response Late: q=2.9e-03, 命中 9 基因
+  [Hallmark] UV Response Dn: q=2.5e-02, 命中 6 基因
+  [Hallmark] Androgen Response: q=2.5e-02, 命中 5 基因
+  [Hallmark] Coagulation: q=6.6e-02, 命中 5 基因
+
+== Enrichr：LUSC 方向 top 200 基因 ==
+  [Hallmark] Estrogen Response Late: q=1.1e-02, 命中 8 基因
+  [Hallmark] p53 Pathway: q=1.1e-02, 命中 8 基因
+  [Hallmark] KRAS Signaling Dn: q=1.1e-02, 命中 8 基因
+  [Hallmark] Apical Junction: q=3.6e-02, 命中 7 基因
+  [Hallmark] Estrogen Response Early: q=1.1e-01, 命中 6 基因
+
+富集条形图 -> enrich_barplot.png
+
+✅ DE 分析完成

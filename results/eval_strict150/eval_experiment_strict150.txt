@@ -1,0 +1,1 @@
+{'task': 'task_2_tumor_subtyping', 'split': 'test', 'save_dir': './eval_results\\EVAL_strict150', 'models_dir': 'results\\luad_lusc_CLAM_sb_strict_s1', 'model_type': 'clam_sb', 'drop_out': 0.25, 'model_size': 'small'}
