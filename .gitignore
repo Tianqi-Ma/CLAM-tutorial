@@ -6,6 +6,7 @@ data/metadata/*
 !data/metadata/clinical.json
 # RNA 文件 ↔ 样本类型的元数据很小，入库（download_tcga.py --metadata-only 生成）
 !data/metadata/rna_files.csv
+!data/metadata/TCGA-CDR.csv
 # 特征 44GB + patch 坐标 776MB（notebook §3 两步重新生成）
 results/tcga/features/
 results/tcga/patching/
