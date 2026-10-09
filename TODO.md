@@ -9,44 +9,44 @@
 
 ## 第 0 步：准备（几分钟）
 
-- [ ] **拉取更新**：先 `git status` 确认本地没有未提交的改动，再 `git pull`。
+- [x] **拉取更新**：先 `git status` 确认本地没有未提交的改动，再 `git pull`。
   - 拉完后，`results/multiomics/` 和 `results/survival/` 里的旧结果会挪到 `results/archive_v1/`，这是正常的。
-- [ ] **补装可选依赖**：`uv pip install gseapy`。装了才会跑预排序 GSEA；不装也能跑，只是跳过这一项。
-- [ ] **提交划分文件**：把 `E:\Projects\DP\CLAM\splits\task_2_strict150\` 和 `task_2_tumor_subtyping_100\` 复制到仓库里的 `splits\` 下，然后提交。
+- [x] **补装可选依赖**：`uv pip install gseapy`。装了才会跑预排序 GSEA；不装也能跑，只是跳过这一项。
+- [x] **提交划分文件**：把 `E:\Projects\DP\CLAM\splits\task_2_strict150\` 和 `task_2_tumor_subtyping_100\` 复制到仓库里的 `splits\` 下，然后提交。
   - 原因：换个 sklearn 版本，同样的种子会分出不同的组，这两套划分以后没法再生成。
 
 ## 第 1 步：补取数据信息（几分钟，需要联网）
 
-- [ ] **刷新元数据**：`python scripts/download_tcga.py --metadata-only`
+- [x] **刷新元数据**：`python scripts/download_tcga.py --metadata-only`
   - 只向 GDC 查询信息，不下载切片和表达文件。网速慢的话先设 `GDC_PROXY`。
   - 日志里应看到 `clinical.json: 144 cases (… with follow_ups)`，括号里的数字应该是大多数病人。
   - 日志里应看到 `rna_files.csv: … files {'Primary Tumor': …, 'Solid Tissue Normal': …}`。
-- [ ] **（可选，推荐）准备 TCGA-CDR 生存表**：下载 Liu et al. 2018 *Cell* 的补充表 S1（TCGA-CDR），把 `TCGA-CDR` 这个工作表另存为 `data/metadata/TCGA-CDR.csv`。
+- [x] **（可选，推荐）准备 TCGA-CDR 生存表**：下载 Liu et al. 2018 *Cell* 的补充表 S1（TCGA-CDR），把 `TCGA-CDR` 这个工作表另存为 `data/metadata/TCGA-CDR.csv`。
   - 有这个文件时，生存分析会自动优先用它。它是官方整理过的生存数据，比 GDC 原始记录可靠。
 
 ## 第 2 步：检查放大倍数（几分钟）
 
-- [ ] **跑检查脚本**：`python scripts/check_slide_mpp.py`
+- [x] **跑检查脚本**：`python scripts/check_slide_mpp.py`
   - 输出 `results/tcga/slide_mpp.csv`，并打印"倍率 × 亚型"的交叉表。
   - 如果只有一种倍率，这个问题就不存在。
   - 如果 20× 和 40× 混在一起，先记下来，第 6 步再处理。
 
 ## 第 3 步：生成新的形态特征（可能要几十分钟，要读 69GB 特征）
 
-- [ ] **跑嵌入脚本**：`python scripts/embed_slides.py`
+- [x] **跑嵌入脚本**：`python scripts/embed_slides.py`
   - 产物在 `results/embeddings/`：`meanpool_*.csv`，以及 `clam_fold0~4_*.csv`。
 
 ## 第 4 步：重跑多组学和生存（每个几分钟到十几分钟）
 
-- [ ] `python scripts/analysis_multiomics.py`
+- [x] `python scripts/analysis_multiomics.py`
   - 日志第一行应写"按样本类型保留原发肿瘤 144 个"。
   - **如果写的是"无元数据 N 个"且 N > 0**，说明 GDC 的文件名和本地的对不上，先停下排查。
-- [ ] `python scripts/analysis_de.py`
+- [x] `python scripts/analysis_de.py`
   - 需要联网下载 Enrichr 基因集；Python 连不上时会自动改用 `curl.exe`。
-- [ ] `python scripts/analysis_morph_predict.py`
-- [ ] `python scripts/analysis_survival.py`
+- [x] `python scripts/analysis_morph_predict.py`
+- [x] `python scripts/analysis_survival.py`
   - **如果打印"缺失不平衡，生存分析不可用"**，说明第 1 步没取到随访记录。先停下排查，不要加 `--force`。
-- [ ] `python scripts/analysis_cox.py`
+- [x] `python scripts/analysis_cox.py`
 
 ⚠️ **暂时不要跑带 `--embedding clam` 的版本**：它的输出文件名和默认版本一样，会把结果覆盖掉。需要时先给脚本的输出文件名加后缀。
 
@@ -54,11 +54,11 @@
 
 ## 第 5 步：按医院分组重新训练（GPU，几个小时；回答"模型是不是在认医院"）
 
-- [ ] **生成按医院分组的划分**：
+- [x] **生成按医院分组的划分**：
   ```
   python scripts/make_strict_splits.py data/dataset_csv/tcga_luad_lusc.csv E:/Projects/DP/CLAM/splits/task_2_site150 --group-by site
   ```
-- [ ] **训练**：在 `E:\Projects\DP\CLAM` 目录下逐折训练，参数和严格版一样，只换实验名和划分目录。每折单独开一个进程，即加 `--k_start i --k_end i+1`，i 从 0 到 4。
+- [x] **训练**：在 `E:\Projects\DP\CLAM` 目录下逐折训练，参数和严格版一样，只换实验名和划分目录。每折单独开一个进程，即加 `--k_start i --k_end i+1`，i 从 0 到 4。
   ```
   python main.py --drop_out 0.25 --early_stopping --lr 2e-4 --k 5 --exp_code luad_lusc_CLAM_sb_site --split_dir task_2_site150 --weighted_sample --bag_loss ce --inst_loss svm --task task_2_tumor_subtyping --model_type clam_sb --subtyping --embed_dim 1024 --data_root_dir E:/Projects/DP/CLAM-tutorial/results/tcga/features --k_start 0 --k_end 1
   ```
@@ -76,7 +76,7 @@
 
 - [ ] **重画热图**：用修好的 `scripts/make_heatmap.py` 重画。
   - 示例切片建议从 `results/eval_strict150/fold_*.csv` 里挑模型很确定的（p 接近 0 或 1），并用这张切片所在测试折的模型。
-- [ ] **统一倍率**：只有第 2 步发现倍率混杂时才做。把 40× 切片改成切 512 像素的方块（提特征时会统一缩到 224），再重新提特征、重新训练。工作量大，可以排在最后。
+- [ ] **统一倍率**（决定不做，留作已知限制）：第 2 步发现 142 张 40× + 8 张 20×（7 LUSC / 1 LUAD）。只涉及 8 张，重切+重提特征+重训成本远超收益，记录在 README 审计表。只有第 2 步发现倍率混杂时才做。把 40× 切片改成切 512 像素的方块（提特征时会统一缩到 224），再重新提特征、重新训练。工作量大，可以排在最后。
 
 ## 第 7 步：提交结果
 

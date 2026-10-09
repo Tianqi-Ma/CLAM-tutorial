@@ -495,3 +495,19 @@ Windows 的 DataLoader worker→主进程共享内存走页面文件，16GB 内�
 - CONCH 玩具：Linear(4→2) 是 10 个参数；损失下限 log(600)。
 
 改动全部在 2026-10-09 的提交里：`scripts/common.py`、`embed_slides.py`、`eval_cv_summary.py`、`check_slide_mpp.py`、`audit_v1_embedding_folds.py` 为新增，五个 analysis 脚本重写为 v2，v1 产物移到 `results/archive_v1/`。v2 脚本在合成数据上跑通，真实数据需在本机重跑。
+
+## 25. v2 真实数据重跑 + 按中心分组重训（2026-10-10）
+
+审计 TODO 在数据机上的执行记录。
+
+**v2 多组学 / 生存（真实数据，已完成）**
+- `download_tcga.py --metadata-only`：重取带 follow_ups 的 clinical.json（144/144 有随访，v1 的"44 个活着的 LUAD 没有随访"确认是下载脚本漏字段）；生成 rna_files.csv（167 个文件 = 150 原发肿瘤 + 16 癌旁正常 + 1 复发）；从 GDC 托管的 xlsx 转出 TCGA-CDR.csv（Xena 403，改走 GDC API 直取）。
+- `embed_slides.py`：meanpool + 5 折 CLAM 模型两套嵌入（slide/patient 两级共 12 个 csv）。教训：管道接 tail 会吞掉非零退出码，后台任务第一次"成功"实际死在 import timm；改重定向日志 + `echo exit=$?`。embed_slides 依赖 CLAM 的 topk/models，用 clam_latest 的 python 跑（DP venv 里 uv 装 timm 遇网络重置）。
+- 多组学 v2：144 个原发肿瘤表达谱，DE 1,366 显著（LUAD 高 592 / LUSC 高 774），阳性对照通过（角化 q=3.1e-26 / 表面活性物质 q=3.2e-08）。marker 总体相关 BH 显著但亚型内大多消失；中心解释 PC 方差 30–58% vs 亚型 0–19%；6 个 marker 的 ΔR² 全 ≤ 0。全基因组 ΔR²：769 个基因超置换零分布 99% 分位（+0.0488，随机预期 ~149），头部全是 T/NK 标志（IL18RAP 0.169 等），CYT 形态 R²=+0.12 vs 亚型 −0.01。
+- 生存 v2：TCGA-CDR 终点 142/144 可用，两亚型缺失率各 1.4%。亚型 KM p=0.612（v1 的 p<0.001 是 bug 倒影）；分期 KM p=0.128；Cox（139 例 58 事件，亚型分层，20×5 重复 CV）临床池化 C-index 0.617，加形态 0.588，ΔC=−0.029（bootstrap 95% [−0.100, +0.028]）；唯一显著协变量男性 HR=1.847 p=0.035。
+
+**按中心分组 5 折重训（TODO 第 5 步）**
+- 划分：`make_strict_splits.py --group-by site`（task_2_site150）；训练 exp `luad_lusc_CLAM_sb_site`。
+- 教训一：两个 GPU 任务并发（embed + 训练）把 Windows commit 限额打爆，fold 0/1 段错误（exit 139）——且 CLAM 在验证集改善时训练中途就存 checkpoint，"有 checkpoint"≠"训练完成"（fold 0 只跑到 epoch 13）。真正的完成标志是 `split_i_results.pkl`。
+- 教训二（exit 139 根因深挖）：串行之后 fold 0 又在 epoch 14 准时崩了一次。实测 commit 限额 28.1GB 只剩 2.6GB 空闲，而训练进程自己 commit 了 8.1GB——大头是 **WDDM 下显存占用兑现为 commit charge**：bag 大小悬殊（7k~98k patch），CUDA 缓存分配器的保留块随 epoch 数碎片化增长，直到系统无 commit 可给。修复：`core_utils.py` 的 train/validate 循环每 epoch 结束 `torch.cuda.empty_cache()`（CLAM 的 `torch.load` 此前已打过 `mmap=True` 补丁，所以 bag 读入不占 commit，问题只剩显存侧）。加补丁后重跑通过。同机教训汇总：GPU 任务串行 + 每 epoch empty_cache + torch.load mmap + workers≤1。
+- 结果（带补丁重跑 fold 0/1 各 52 epoch、early stopping 正常触发后评估）：每折 AUC 0.738 / 0.640 / 0.582 / 0.764 / 0.778（0.700±0.085）；池化切片级 **0.647**；患者级 **0.647 [0.553, 0.736]**。对比按患者分组（0.783 / 0.775 [0.70, 0.85]）：**约 0.13 个 AUC 来自"认医院"**，剩余 0.647 仍高于随机（CI 下限 0.55）——形态有真实的、不依赖中心的亚型信号，但账面数字虚高明显。

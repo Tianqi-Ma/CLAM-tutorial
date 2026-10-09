@@ -1,0 +1,43 @@
+表达矩阵: 167 个文件 / 144 个患者 → 按样本类型保留原发肿瘤 144 个（剔除非原发 17 个、无元数据 0 个；6 个患者有多份原发样本，取编号最小的）
+19938 个蛋白编码基因 × 144 患者（LUAD 70 / LUSC 74）；过滤后 14910 个基因参与检验
+显著（q<0.05 且 |log2FC|>1）: 1366 个 = LUAD 高 592 + LUSC 高 774
+  [marker] NKX2-1 : log2FC=+3.73, q=4.5e-15
+  [marker] NAPSA  : log2FC=+4.12, q=1.4e-14
+  [marker] SFTPB  : log2FC=+2.92, q=2.8e-07
+  [marker] TP63   : log2FC=-4.85, q=2.2e-16
+  [marker] KRT5   : log2FC=-8.02, q=1.7e-17
+  [marker] KRT6A  : log2FC=-7.41, q=2.5e-17
+  [marker] SOX2   : log2FC=-3.79, q=1.9e-12
+  [marker] DSG3   : log2FC=-6.22, q=3.4e-18
+
+== ORA（显著基因 vs 参与检验的背景，超几何 + BH）==
+  LUAD [Reactome] Surfactant Metabolism R-HSA-5683826: 12/24（期望 1.0），q=3.2e-08
+  LUAD [Reactome] O-linked Glycosylation Of Mucins R-HSA-913709: 14/44（期望 1.7），q=3.9e-07
+  LUAD [Reactome] Defective GALNT12 Causes CRCS1 R-HSA-5083636: 8/11（期望 0.4），q=3.9e-07
+  LUAD [MSigDB] Estrogen Response Early: 27/195（期望 7.7），q=6.9e-07
+  LUAD [MSigDB] Coagulation: 20/116（期望 4.6），q=6.9e-07
+  LUAD [Reactome] Defective GALNT3 Causes HFTC R-HSA-5083625: 7/11（期望 0.4），q=1.4e-05
+  LUSC [Reactome] Keratinization R-HSA-6805567: 39/79（期望 4.1），q=3.1e-26
+  LUSC [MSigDB] G2-M Checkpoint: 50/197（期望 10.2），q=8.7e-20
+  LUSC [MSigDB] E2F Targets: 49/198（期望 10.3），q=3.6e-19
+  LUSC [Reactome] Formation Of Cornified Envelope R-HSA-6809371: 25/48（期望 2.5），q=3.5e-17
+  LUSC [Reactome] Cell Cycle Checkpoints R-HSA-69620: 51/253（期望 13.1），q=1.4e-14
+  LUSC [Reactome] Cell Cycle: 71/493（期望 25.6），q=1.1e-12
+  阳性对照:
+    LUSC 侧 Keratinization R-HSA-6805567: q=3.1e-26
+    LUSC 侧 Formation Of Cornified Envelope R-HSA-6809371: q=3.5e-17
+    LUAD 侧 Surfactant Metabolism R-HSA-5683826: q=3.2e-08
+
+== 预排序 GSEA（NES>0 = LUAD 侧富集）==
+  [MSigDB] E2F Targets: NES=-2.63, FDR=0.0e+00
+  [MSigDB] G2-M Checkpoint: NES=-2.51, FDR=0.0e+00
+  [MSigDB] Myc Targets V1: NES=-2.39, FDR=0.0e+00
+  [MSigDB] Myc Targets V2: NES=-2.00, FDR=0.0e+00
+  [Reactome] Regulation Of APC/C Activators Between G1/S And Early Anapha: NES=-2.13, FDR=0.0e+00
+  [Reactome] APC/C:Cdh1 Mediated Degradation Of Cdc20 And APC/C:Cdh1 Targ: NES=-2.12, FDR=0.0e+00
+  [Reactome] APC/C:Cdc20 Mediated Degradation Of Mitotic Proteins R-HSA-1: NES=-2.12, FDR=0.0e+00
+  [Reactome] DNA Repair R-HSA-73894: NES=-2.12, FDR=0.0e+00
+  [Reactome] Resolution Of D-loop Structures Thru Holliday Junction Inter: NES=-2.03, FDR=0.0e+00
+  [Reactome] Resolution Of D-Loop Structures R-HSA-5693537: NES=-2.03, FDR=0.0e+00
+
+✅ DE 分析完成 → E:\Projects\DP\CLAM-tutorial\results\multiomics

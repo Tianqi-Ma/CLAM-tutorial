@@ -1,0 +1,12 @@
+== clam：每折模型给全部切片提嵌入（fc1 + 门控注意力池化，512 维）==
+Setting tau to 1.0
+  clam_fold0: 150 张切片 / 144 个患者 × 512 维（常数维 199 个，下游会丢弃）
+Setting tau to 1.0
+  clam_fold1: 150 张切片 / 144 个患者 × 512 维（常数维 186 个，下游会丢弃）
+Setting tau to 1.0
+  clam_fold2: 150 张切片 / 144 个患者 × 512 维（常数维 148 个，下游会丢弃）
+Setting tau to 1.0
+  clam_fold3: 150 张切片 / 144 个患者 × 512 维（常数维 129 个，下游会丢弃）
+Setting tau to 1.0
+  clam_fold4: 150 张切片 / 144 个患者 × 512 维（常数维 165 个，下游会丢弃）
+✅ 嵌入已写入 E:\Projects\DP\CLAM-tutorial\results\embeddings

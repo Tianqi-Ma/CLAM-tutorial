@@ -3,12 +3,12 @@
 在 Windows 11 上从零复现 CLAM（mahmoodlab/CLAM）WSI 弱监督分析流水线的完整工程。
 配套踩坑实录见 [docs/clam-setup-log.md](docs/clam-setup-log.md)。
 
-> **当前状态（2026-10-09 审计后）**
+> **当前状态（2026-10-10 v2 真实数据重跑后）**
 > - 数据：150 张 TCGA 诊断切片（LUAD/LUSC 各 75，144 名患者，138GB）→ 842 万 patch → ResNet50 特征（69GB）。
 > - 分类（CLAM-SB，LUAD vs LUSC）：严格 5 折（每个患者恰好测一次）每折 AUC **0.834 ± 0.090**；把 5 折预测拼起来的池化 AUC **0.783**；
 >   患者级 AUC **0.775（bootstrap 95% CI 0.70–0.85）**。CLAM 默认的蒙特卡洛划分每折均值 0.788 ± 0.181，且只覆盖 52/150 张。
-> - ⚠️ **中心混杂**：43 个组织来源中心每个只贡献一种亚型，150 张测试切片里 138 张的中心在训练集出现过，分数可能部分来自"认医院"。按中心分组的重训还没做。
-> - ⚠️ **多组学和生存分析的 v1 结果有会改变结论的错误**（见下文），v1 产物归档在 `results/archive_v1/`。v2 脚本已重写，并在合成数据上把整条流程跑通，但还需要在原机器上用真实数据重跑。
+> - ⚠️ **中心混杂**：43 个组织来源中心每个只贡献一种亚型，150 张测试切片里 138 张的中心在训练集出现过。按中心分组重训的 5 折（测试集永远是从没见过的中心）：池化 AUC **0.647**、患者级 **0.647 [0.55–0.74]**，对比按患者分组的 0.783 / 0.775——约 0.13 的 AUC 来自"认医院"，剩余部分仍高于随机（详见 `results/eval_site150/cv_summary.txt`）。
+> - ✅ **多组学 / 生存已按 v2 流程用真实数据重跑**（v1 产物归档在 `results/archive_v1/`）：DE 1,366 个显著基因且阳性对照通过（角化 / 表面活性物质分列两侧通路榜首）；形态对 6 个亚型 marker 的 ΔR²（超出亚型标签的部分）全部 ≤ 0，但全基因组扫描发现形态超出亚型的信号集中在免疫浸润（CYT 形态 R²=+0.12 vs 亚型 −0.01）；生存用补全的随访 + TCGA-CDR 终点重跑，LUAD vs LUSC log-rank p=0.612（不显著），Cox 加形态后 ΔC=−0.029（区间跨 0）。详见 notebook §8/§9 的 v2 结果小节。
 > - 📋 在数据所在电脑上要做的事，按顺序列在 [TODO.md](TODO.md)。
 
 ## 2026-10 审计：问题与改动
@@ -17,7 +17,7 @@
 
 | 问题 | 影响 | 改动 |
 |---|---|---|
-| 组织来源中心与标签完全重合 | 分数可能含"认医院"的成分；12 张来自训练集没出现过的中心的切片 AUC 只有 0.69（样本太少，不能下结论） | `eval_cv_summary.py` 量化；`make_strict_splits.py --group-by site` 支持按中心分组 |
+| 组织来源中心与标签完全重合 | 分数含"认医院"的成分：按中心分组重考后池化 AUC 从 0.783 掉到 0.647（患者级 0.775→0.647） | `eval_cv_summary.py` 量化；`make_strict_splits.py --group-by site` 按中心分组重训（`results/eval_site150/`） |
 | 只报每折 AUC 的均值 | 0.834 偏乐观，也没有不确定性 | 补池化 AUC、患者级 AUC + bootstrap 区间、校准与阈值（`results/eval*/cv_summary.txt`） |
 | 倍率没统一（level 0 切 256 像素） | 40× 和 20× 切片的 patch 物理尺度差 4 倍 | `check_slide_mpp.py` 查倍率分布；建议统一到 20× 等效 |
 | 严格折的划分依赖 sklearn 版本 | 用 sklearn 1.9.1 重新生成的划分和原来的对不上 | 脚本打印版本；划分文件应随结果入库 |
@@ -54,9 +54,9 @@ CLAM-tutorial/
 │   ├── slides/tcga/*.svs        ← TCGA-LUAD/LUSC 诊断切片 ×150（138GB）
 │   ├── dataset_csv/             ← CLAM 格式数据集 csv（case_id, slide_id, label）
 │   ├── metadata/
-│   │   ├── clinical.json        ← GDC 临床数据（144 例；仓库里这份没有 follow_ups，需 --metadata-only 重取）
+│   │   ├── clinical.json        ← GDC 临床数据（144 例，含 follow_ups；2026-10 已用 --metadata-only 重取）
 │   │   ├── rna_files.csv        ← RNA-seq 文件 ↔ 样本类型（--metadata-only 生成）
-│   │   ├── TCGA-CDR.csv         ← 可选：TCGA-CDR 终点表（Liu et al. 2018 Cell，自行下载另存）
+│   │   ├── TCGA-CDR.csv         ← TCGA-CDR 终点表（Liu et al. 2018 Cell；由 GDC 托管的 xlsx 转出，随仓库提供）
 │   │   └── expression/          ← RNA-seq STAR counts（167 个文件，含癌旁正常/复发样本）
 │   └── download_manifest.json   ← 下载断点续传清单
 ├── scripts/
@@ -83,8 +83,11 @@ CLAM-tutorial/
 │   ├── tcga/                    ← patching + features + QC 图（大文件不入库）
 │   ├── eval/                    ← MC 版 5 折成绩 + 逐切片预测 + cv_summary.txt
 │   ├── eval_strict150/          ← 严格 5 折成绩 + 逐切片预测 + cv_summary.txt
-│   ├── heatmaps/                ← 注意力热图（MC150 fold-4 模型，2 LUAD + 2 LUSC）
-│   ├── survival/                ← v2 缺失检查在现有 clinical.json 上的输出（按设计停止）
+│   ├── eval_site150/            ← 按中心分组 5 折成绩 + cv_summary.txt（中心混杂检验）
+│   ├── embeddings/              ← 形态嵌入：meanpool + 每折 CLAM 模型（slide/patient 两级）
+│   ├── multiomics/              ← v2 多组学：DE / 富集 / marker 关联 / 形态→表达（含图）
+│   ├── heatmaps/                ← 注意力热图（严格 5 折模型，修正版 make_heatmap.py）
+│   ├── survival/                ← v2 生存：缺失检查 + KM + Cox（TCGA-CDR 终点）
 │   ├── archive_v1/              ← v1 多组学 / 生存产物（有已知错误，仅供对照）
 │   ├── eval_mc100/              ← 归档：100 张时代 MC 评估
 │   ├── heatmaps_mc100/          ← 归档：100 张时代热图
@@ -117,6 +120,6 @@ CLAM 本体在同级目录 `../CLAM`（官方仓库 clone + 若干 Windows 兼�
   python scripts/analysis_survival.py
   python scripts/analysis_cox.py
   ```
-- 只看结果：`results/eval_strict150/cv_summary.txt`、`results/eval*/summary.csv`、`results/heatmaps/*.png`。
+- 只看结果：`results/eval_strict150/cv_summary.txt`、`results/eval*/summary.csv`、`results/multiomics/run_log.txt`、`results/survival/run_log.txt`、`results/heatmaps/*.png`。
 
 > 原始切片（138GB）与特征文件（69GB）不入库——`python scripts/download_tcga.py` 可重新下载，后续步骤全部幂等续跑。
