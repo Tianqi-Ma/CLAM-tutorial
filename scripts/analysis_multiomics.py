@@ -1,181 +1,208 @@
 # -*- coding: utf-8 -*-
-"""多组学分析：组织学形态特征 × 基因表达
-1. 已知 marker 基因 sanity check（NKX2-1=LUAD, TP63/KRT5/KRT6A=LUSC）
-2. CLAM 注意力池化得到"形态嵌入"（512 维）。划分已升级为严格 k 折（make_strict_splits.py），
-   每张切片恰好是一折的测试集 → 全部零泄漏嵌入（权重用严格折实验 luad_lusc_CLAM_sb_strict_s1）。
-   背景：CLAM 官方 create_splits_seq 是蒙特卡洛 CV（每折随机 80/10/10），不是严格分区，
-   旧版（100 张时代）实测 45 张进过 test、26 张仅 val、29 张全在 train —— 已作为踩坑 #11 修复。
-3. 形态 PCA 主成分 vs marker 表达量相关性 + 岭回归交叉验证
+"""多组学①：marker 体检 + 形态嵌入 × marker 表达（v2，2026-10 审计后重写）
+
+v1 的问题与 v2 的改法：
+  - 表达：v1 按患者覆盖写入，多文件患者可能用上癌旁正常样本 → 只取原发肿瘤（common.load_expression）。
+  - 嵌入：v1 每张切片用自己测试折的 CLAM 模型提嵌入，5 个模型的空间不同，PCA 主成分混进了折号
+    （PC2–PC5 有 81~97% 方差由折号解释，见 audit_v1_embedding_folds.py）→ 默认改用 meanpool（ResNet50 特征直接平均，所有切片同一空间，
+    且不经过用 LUAD/LUSC 标签训练的模型）；--embedding clam 时每折用自己的模型空间，在折内拟合与评估。
+  - 相关：v1 对每个 marker 在 PC1-5 里挑 |r| 最大的一个报告 p 值（挑选后 p 值偏小），散点图还画错了一列
+    （Z[:, pc_show] 用 1 起的编号去索引 0 起的数组）→ 报告全部 marker × PC 的相关并做 BH 校正。
+  - 预测：v1 只看"形态 → marker"的 R²。可 marker 本身就是亚型标志，形态嵌入又带着亚型，R² 高低主要反映亚型。
+    v2 同时给出 只用亚型标签 / 只用形态 / 亚型+形态 三个模型，ΔR² = 亚型+形态 − 只用亚型 才是"形态在亚型之外"的信息；
+    交叉验证有随机 5 折和按组织来源中心（TSS）分组两种，后者检验结论是不是靠中心特有的染色/批次撑起来的。
+产物: results/multiomics/markers_boxplot.png, morph_vs_expr.png, morph_marker_assoc.csv, morph_marker_predict.csv
+用法: python scripts/analysis_multiomics.py [--embedding meanpool|clam] [--n-pc 10] [--allow-ambiguous]
 """
-import sys, glob, os, argparse
-sys.stdout.reconfigure(encoding='utf-8')
-sys.path.insert(0, r'E:/Projects/DP/CLAM')
-import numpy as np, pandas as pd, torch, json
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']; plt.rcParams['axes.unicode_minus'] = False
+import argparse
+import sys
+
+import numpy as np
+import pandas as pd
 from scipy.stats import mannwhitneyu, spearmanr
-from models.model_clam import CLAM_SB
-from topk.svm import SmoothTop1SVM
-
-PROJ = r'E:/Projects/DP/CLAM-tutorial'
-CLAM = r'E:/Projects/DP/CLAM'
-OUT  = f'{PROJ}/results/multiomics'
-os.makedirs(OUT, exist_ok=True)
-
-ap = argparse.ArgumentParser()
-ap.add_argument('--splits-tag', default='task_2_strict150', help='CLAM/splits/ 下的划分目录名')
-ap.add_argument('--ckpt-exp', default='luad_lusc_CLAM_sb_strict_s1', help='CLAM/results/ 下的实验目录名')
-args = ap.parse_args()
-
-# ---------- 1. 标签 + 表达矩阵 ----------
-csv = pd.read_csv(f'{PROJ}/data/dataset_csv/tcga_luad_lusc.csv')
-label_of_case = dict(zip(csv['case_id'], csv['label']))
-MARKERS = {'NKX2-1': 'LUAD（TTF-1，肺腺癌标志）', 'TP63': 'LUSC（鳞癌标志）',
-           'KRT5': 'LUSC（鳞癌角化）', 'KRT6A': 'LUSC（鳞癌角化）'}
-
-expr = {}
-for f in glob.glob(f'{PROJ}/data/metadata/expression/*.tsv'):
-    case = os.path.basename(f).split('__')[0]
-    df = pd.read_csv(f, sep='\t', comment='#', usecols=['gene_name', 'gene_type', 'tpm_unstranded'])
-    df = df[df['gene_type'] == 'protein_coding'].drop_duplicates('gene_name').set_index('gene_name')
-    expr[case] = df['tpm_unstranded']
-E = pd.DataFrame(expr)                      # 行=基因, 列=case
-E = E[[c for c in E.columns if c in label_of_case]]
-print(f'表达矩阵: {E.shape[0]} 个蛋白编码基因 × {E.shape[1]} 个患者（114 个文件中匹配到标签的）')
-
-logE = np.log1p(E)
-print('\n== marker 基因 sanity check（log1p TPM 中位数, Mann-Whitney）==')
-fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-marker_p = {}
-for ax, (g, desc) in zip(axes, MARKERS.items()):
-    a = logE.loc[g, [c for c in E.columns if label_of_case[c] == 'LUAD']]
-    b = logE.loc[g, [c for c in E.columns if label_of_case[c] == 'LUSC']]
-    p = mannwhitneyu(a, b).pvalue
-    marker_p[g] = p
-    ax.boxplot([a, b], labels=['LUAD', 'LUSC'], showfliers=False)
-    ax.set_title(f'{g}\np={p:.1e}', fontsize=10)
-    ax.set_ylabel('log1p(TPM)')
-    print(f'  {g:7s} ({desc}): LUAD中位 {a.median():.2f} vs LUSC中位 {b.median():.2f}, p={p:.2e}')
-fig.suptitle('已知的肺腺癌/鳞癌 marker 基因，在我们的标签分组下表达差异是否符合预期（方向对=标签和数据都健康）')
-fig.tight_layout(); fig.savefig(f'{OUT}/markers_boxplot.png', dpi=110, bbox_inches='tight'); plt.close(fig)
-
-# ---------- 2. 形态嵌入（注意力池化，512 维） ----------
-# 划分已升级为严格 k 折（scripts/make_strict_splits.py，见 notebook §4 与踩坑 #11）：
-# 每张切片恰好属于某一折的测试集 → 全部用它当 test 那一折的模型提嵌入，零泄漏、无借用。
-# （防御性 fallback 保留：万一换划分文件，退到 val 折 → fold-0，并如实打印来源统计。）
-print('\n== 计算形态嵌入（严格 k 折：每张切片用它当 test 那一折的模型，零泄漏）==')
-SPLITS_DIR = f'{CLAM}/splits/{args.splits_tag}'
-CKPT_DIR   = f'{CLAM}/results/{args.ckpt_exp}'   # 严格折实验的权重（与划分一一对应）
-fold_sets = []
-for k in range(5):
-    sp = pd.read_csv(f'{SPLITS_DIR}/splits_{k}.csv')
-    fold_sets.append({c: set(sp[c].dropna()) for c in ['train', 'val', 'test']})
-
-def pick_fold(s):
-    for k in range(5):
-        if s in fold_sets[k]['test']: return k, 'test'
-    for k in range(5):
-        if s in fold_sets[k]['val']:  return k, 'val'
-    return 0, 'train-leak'
-
-src_count = {'test': 0, 'val': 0, 'train-leak': 0}
-emb, emb_src = {}, {}
-D = f'{PROJ}/results/tcga/features/pt_files'
-models = {}
-for i, s in enumerate(csv['slide_id']):
-    k, src = pick_fold(s)
-    src_count[src] += 1
-    if k not in models:
-        m = CLAM_SB(dropout=0., n_classes=2, subtyping=True, embed_dim=1024,
-                    instance_loss_fn=SmoothTop1SVM(2))
-        m.load_state_dict(torch.load(f'{CKPT_DIR}/s_{k}_checkpoint.pt', map_location='cpu'))
-        m.eval(); models[k] = m
-    m = models[k]
-    h = torch.load(f'{D}/{s}.pt', map_location='cpu', mmap=True)
-    with torch.no_grad():
-        hh = m.attention_net[1](m.attention_net[0](h))       # fc1 + ReLU → 512 维
-        A, _ = m.attention_net[3](hh)                        # 门控打分 → (N,1)
-        A = torch.softmax(A, dim=0)
-        M = (A * hh).sum(0)                                  # 注意力池化 → 512 维形态嵌入
-    emb[s] = M.numpy()
-    emb_src[s] = src
-    del h
-    if i % 25 == 24: print(f'  {i+1}/100')
-print(f'  选折来源统计: test折 {src_count["test"]} 张（零泄漏）/ val折 {src_count["val"]} 张（近似无泄漏）'
-      f' / 借用fold-0 {src_count["train-leak"]} 张（泄漏，见下）')
-X = pd.DataFrame(emb).T                                     # 行=slide, 列=512
-sl2case = csv.set_index('slide_id')['case_id']
-X_case = X.groupby(sl2case).mean()                          # 患者级（多切片取平均）
-# 患者级"干净"标记：该患者所有切片都是 test/val 来源才算干净
-clean_slide = pd.Series({s: (emb_src[s] != 'train-leak') for s in emb_src})
-clean_case = clean_slide.groupby(sl2case).all()
-X_case = X_case.loc[[c for c in X_case.index if c in E.columns]]
-print(f'形态嵌入: {X_case.shape[0]} 患者 × 512 维（干净患者 {int(clean_case[X_case.index].sum())}，'
-      f'含泄漏切片的患者 {int((~clean_case[X_case.index]).sum())}）')
-# 保存嵌入供下游（Cox 预后模型等）复用：morph_embeddings.csv + 逐患者来源 meta
-X_case.round(6).to_csv(f'{OUT}/morph_embeddings.csv')
-pd.DataFrame({'case': X_case.index,
-              'label': [label_of_case[c] for c in X_case.index],
-              'clean': [bool(clean_case[c]) for c in X_case.index],
-              'n_slides': [int((sl2case == c).sum()) for c in X_case.index]}
-             ).to_csv(f'{OUT}/morph_embeddings_meta.csv', index=False)
-print('嵌入已保存: morph_embeddings.csv (+_meta.csv)')
-
-# ---------- 3. 形态 PCA vs marker 表达 ----------
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import RidgeCV
-from sklearn.model_selection import cross_val_score
-Z = PCA(10).fit_transform(StandardScaler().fit_transform(X_case))
-cases = list(X_case.index)
-labs = [label_of_case[c] for c in cases]
+from sklearn.model_selection import GroupKFold, KFold
+from sklearn.preprocessing import StandardScaler
 
-print('\n== 形态主成分 × marker 表达（Spearman 相关）==')
+from common import (RESULTS, log_to, bh_fdr, describe_expression_report, load_dataset, load_expression,
+                    load_patient_embedding, setup_matplotlib, strict_fold_of_case)
+
+sys.stdout.reconfigure(encoding='utf-8')
+plt = setup_matplotlib()
+ap = argparse.ArgumentParser()
+ap.add_argument('--embedding', default='meanpool', choices=['meanpool', 'clam'])
+ap.add_argument('--n-pc', type=int, default=10)
+ap.add_argument('--allow-ambiguous', action='store_true', help='没有 rna_files.csv 时剔除多文件患者继续')
+args = ap.parse_args()
+OUT = RESULTS / 'multiomics'
+OUT.mkdir(parents=True, exist_ok=True)
+log_to(OUT / 'run_log.txt')
+MARKERS = {'NKX2-1': 'LUAD（TTF-1）', 'NAPSA': 'LUAD（Napsin A）', 'TP63': 'LUSC（p40/p63）',
+           'KRT5': 'LUSC（CK5/6）', 'KRT6A': 'LUSC（CK5/6）', 'SOX2': 'LUSC'}
+ALPHAS = np.logspace(-2, 4, 25)
+
+# ---------- 1. 表达 + marker 体检 ----------
+ds = load_dataset()
+label_of = ds.drop_duplicates('case_id').set_index('case_id')['label']
+tss_of = ds.drop_duplicates('case_id').set_index('case_id')['tss']
+E, rep = load_expression(cases=label_of.index, strict=not args.allow_ambiguous)
+print('表达矩阵:', describe_expression_report(rep))
+print(f'  → {E.shape[0]} 个蛋白编码基因 × {E.shape[1]} 个患者')
+logE = np.log2(E + 1)
+markers = [g for g in MARKERS if g in logE.index]
+
+print('\n== marker 体检（log2(TPM+1) 中位数，Mann-Whitney）==')
+fig, axes = plt.subplots(1, len(markers), figsize=(3.2 * len(markers), 3.8))
+for ax, g in zip(np.atleast_1d(axes), markers):
+    a = logE.loc[g, [c for c in E.columns if label_of[c] == 'LUAD']]
+    b = logE.loc[g, [c for c in E.columns if label_of[c] == 'LUSC']]
+    p = mannwhitneyu(a, b).pvalue
+    ax.boxplot([a, b], showfliers=False)
+    ax.set_xticks([1, 2], ['LUAD', 'LUSC'])
+    ax.set_title(f'{g}  {MARKERS[g]}\np={p:.1e}', fontsize=9)
+    ax.set_ylabel('log2(TPM+1)')
+    print(f'  {g:7s} {MARKERS[g]:14s}: LUAD {a.median():.2f} vs LUSC {b.median():.2f}, p={p:.1e}')
+fig.suptitle('已知 LUAD / LUSC marker 在标签分组下的表达（方向对 = 标签和表达数据对得上）', fontsize=10)
+fig.tight_layout()
+fig.savefig(OUT / 'markers_boxplot.png', dpi=110, bbox_inches='tight')
+plt.close(fig)
+
+
+# ---------- 2. 交叉验证工具 ----------
+def fit_predict(F_tr, y_tr, F_te):
+    sc = StandardScaler().fit(F_tr)
+    m = RidgeCV(alphas=ALPHAS).fit(sc.transform(F_tr), y_tr)     # α 在训练集内部用 LOO 选（嵌套）
+    return m.predict(sc.transform(F_te))
+
+
+def features(mode, X_tr, X_te, lab_tr, lab_te):
+    """mode: label / morph / both。PCA 只在训练集上拟合。"""
+    out_tr, out_te = [], []
+    if mode in ('label', 'both'):
+        out_tr.append(lab_tr[:, None])
+        out_te.append(lab_te[:, None])
+    if mode in ('morph', 'both'):
+        sc = StandardScaler().fit(X_tr)
+        pca = PCA(min(args.n_pc, X_tr.shape[0] - 1), random_state=0).fit(sc.transform(X_tr))
+        out_tr.append(pca.transform(sc.transform(X_tr)))
+        out_te.append(pca.transform(sc.transform(X_te)))
+    return np.hstack(out_tr), np.hstack(out_te)
+
+
+def r2(y, pred):
+    return 1 - np.sum((y - pred) ** 2) / np.sum((y - y.mean()) ** 2)
+
+
+def cv_r2(X_of_fold, lab, y, splits, mode):
+    """X_of_fold(k) 返回第 k 折使用的嵌入矩阵（meanpool 各折相同；clam 每折一个空间）。"""
+    pred = np.full(len(y), np.nan)
+    for k, (tr, te) in enumerate(splits):
+        X = X_of_fold(k)
+        F_tr, F_te = features(mode, X[tr], X[te], lab[tr], lab[te])
+        pred[te] = fit_predict(F_tr, y[tr], F_te)
+    return r2(y, pred)
+
+
+# ---------- 3. 嵌入 ----------
+if args.embedding == 'meanpool':
+    Xdf = load_patient_embedding('meanpool')
+    cases = [c for c in Xdf.index if c in E.columns]
+    Xall = Xdf.loc[cases].values
+    X_of_fold = lambda k: Xall
+    print(f'\n形态嵌入: meanpool（ResNet50 特征平均）{len(cases)} 患者 × {Xall.shape[1]} 维（已去常数列）')
+else:
+    fold_of = strict_fold_of_case()
+    Xs = [load_patient_embedding(f'clam_fold{k}') for k in range(5)]
+    cases = [c for c in Xs[0].index if c in E.columns and c in fold_of]
+    Xk = [X.loc[cases].values for X in Xs]
+    X_of_fold = lambda k: Xk[k]
+    print(f'\n形态嵌入: CLAM 每折模型空间（折内拟合/评估）{len(cases)} 患者')
+lab = np.array([label_of[c] == 'LUSC' for c in cases], dtype=float)
+tss = np.array([tss_of[c] for c in cases])
+Y = logE.loc[markers, cases].T.values
+
+# ---------- 4. 关联：全部 marker × PC，BH 校正（只在 meanpool 下做；clam 的空间每折不同） ----------
+assoc = None
+if args.embedding == 'meanpool':
+    Xs_all = StandardScaler().fit_transform(Xall)
+    pca_all = PCA(args.n_pc, random_state=0).fit(Xs_all)
+    evr = pca_all.explained_variance_ratio_
+    Z = pca_all.transform(Xs_all)
+    rows = []
+    for gi, g in enumerate(markers):
+        for j in range(args.n_pc):
+            r_all, p_all = spearmanr(Z[:, j], Y[:, gi])
+            r_ad = spearmanr(Z[lab == 0, j], Y[lab == 0, gi])[0]
+            r_sc = spearmanr(Z[lab == 1, j], Y[lab == 1, gi])[0]
+            rows.append({'gene': g, 'pc': j + 1, 'rho': r_all, 'p': p_all, 'rho_within_LUAD': r_ad,
+                         'rho_within_LUSC': r_sc})
+    assoc = pd.DataFrame(rows)
+    assoc['q_BH'] = bh_fdr(assoc['p'])
+    assoc.round({'rho': 4, 'rho_within_LUAD': 4, 'rho_within_LUSC': 4}).to_csv(OUT / 'morph_marker_assoc.csv', index=False)
+    print(f'\n== 形态 PC1-{args.n_pc} × marker（Spearman，{len(assoc)} 次检验统一做 BH）==')
+    for g in markers:
+        sub = assoc[assoc['gene'] == g].sort_values('p').iloc[0]
+        print(f"  {g:7s}: 最强 PC{int(sub['pc'])} ρ={sub['rho']:+.2f}, q={sub['q_BH']:.1e}"
+              f"（亚型内: LUAD ρ={sub['rho_within_LUAD']:+.2f} / LUSC ρ={sub['rho_within_LUSC']:+.2f}）")
+    print('  读法: 如果亚型内 ρ 明显变小，相关主要来自"两个亚型形态不同、表达也不同"，而不是形态逐例跟着表达变。')
+
+    # 主成分由什么解释：亚型 vs 组织来源中心（TSS 嵌套在亚型里，中心的 R² 已包含亚型）。
+    # 43 个中心的自由度很多，普通 R² 纯靠运气也有 ~30%，所以报调整 R²（≤0 = 没有超出随机的解释力）。
+    def adj_r2(z, g):
+        n, k = len(z), len(set(g))
+        fit = pd.Series(z).groupby(g).transform('mean').values
+        r2 = 1 - np.sum((z - fit) ** 2) / np.sum((z - z.mean()) ** 2)
+        return 1 - (1 - r2) * (n - 1) / (n - k)
+    print('\n== 各主成分的方差由谁解释（单因素方差分析的调整 R²）==')
+    for j in range(min(5, args.n_pc)):
+        print(f'  PC{j + 1}（方差 {evr[j]:.1%}）: 亚型 {adj_r2(Z[:, j], lab):+.1%} | '
+              f'组织来源中心 {adj_r2(Z[:, j], tss):+.1%}（含亚型；中心明显高于亚型 = 有亚型之外的中心效应）')
+
+# ---------- 5. 预测：亚型 / 形态 / 亚型+形态，两种 CV ----------
+schemes = {}
+if args.embedding == 'meanpool':
+    schemes['随机5折×5次'] = [list(KFold(5, shuffle=True, random_state=s).split(Y)) for s in range(5)]
+    schemes['按中心分组5折'] = [list(GroupKFold(5).split(Y, groups=tss))]
+else:
+    folds = np.array([fold_of[c] for c in cases])
+    schemes['严格5折（与 CLAM 训练同划分）'] = [[(np.where(folds != k)[0], np.where(folds == k)[0]) for k in range(5)]]
 rows = []
-for g in MARKERS:
-    y = logE.loc[g, cases].values
-    r_best, pc_best, p_best = 0, -1, 1
-    for j in range(5):
-        r, p = spearmanr(Z[:, j], y)
-        if abs(r) > abs(r_best): r_best, pc_best, p_best = r, j, p
-    rows.append((g, pc_best + 1, r_best, p_best))
-    print(f'  {g:7s}: 最强相关 PC{pc_best+1}, r={r_best:+.2f}, p={p_best:.2e}')
+print('\n== 交叉验证 R²（嵌套：PCA 和 α 都只在训练折内拟合）==')
+for gi, g in enumerate(markers):
+    y = Y[:, gi]
+    for sname, reps in schemes.items():
+        res = {m: np.mean([cv_r2(X_of_fold, lab, y, sp, m) for sp in reps]) for m in ('label', 'morph', 'both')}
+        rows.append({'gene': g, 'cv': sname, 'R2_label': res['label'], 'R2_morph': res['morph'],
+                     'R2_label_morph': res['both'], 'dR2_morph_beyond_label': res['both'] - res['label']})
+        print(f"  {g:7s} [{sname}] 亚型 {res['label']:+.2f} | 形态 {res['morph']:+.2f} | 亚型+形态 {res['both']:+.2f}"
+              f" → 形态在亚型之外 ΔR²={res['both'] - res['label']:+.3f}")
+pd.DataFrame(rows).round(4).to_csv(OUT / 'morph_marker_predict.csv', index=False)
+print('  读法: "形态" 一栏接近 "亚型" 一栏，说明形态能预测 marker 主要是因为它认得亚型；ΔR² 才是额外信息。')
 
-# 散点图：最强那对
-g_show, pc_show, r_show, p_show = max(rows, key=lambda x: abs(x[2]))
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-ax = axes[0]
-for lab, c in [('LUAD', '#d62728'), ('LUSC', '#1f77b4')]:
-    m = [i for i, l in enumerate(labs) if l == lab]
-    ax.scatter(Z[m, 0], Z[m, 1], s=25, alpha=0.7, c=c, label=lab)
-ax.set_xlabel('形态 PC1'); ax.set_ylabel('形态 PC2')
-ax.set_title('形态嵌入 PCA（每个点=一个患者）\n→ 两类癌在"纯看片子的形态空间"里也分得开'); ax.legend()
-ax = axes[1]
-y = logE.loc[g_show, cases].values
-for lab, c in [('LUAD', '#d62728'), ('LUSC', '#1f77b4')]:
-    m = [i for i, l in enumerate(labs) if l == lab]
-    ax.scatter(Z[m, pc_show], y[m], s=25, alpha=0.7, c=c, label=lab)
-ax.set_xlabel(f'形态 PC{pc_show}'); ax.set_ylabel(f'{g_show} 表达 log1p(TPM)')
-ax.set_title(f'跨模态关联：形态 PC{pc_show} × {g_show} 表达\nSpearman r={r_show:+.2f}, p={p_show:.1e}'); ax.legend()
-fig.tight_layout(); fig.savefig(f'{OUT}/morph_vs_expr.png', dpi=110, bbox_inches='tight'); plt.close(fig)
-
-# 岭回归：形态 → 预测 NKX2-1 表达（5 折 CV）
-y = logE.loc['NKX2-1', cases].values
-scores = cross_val_score(RidgeCV(alphas=np.logspace(-2, 3, 20)), Z[:, :5], y, cv=5, scoring='r2')
-print(f'\n岭回归（形态 PC1-5 → NKX2-1 表达）5折CV R²: {scores.mean():.2f} ± {scores.std():.2f}')
-print('（>0 说明形态里确实含有该基因表达的信息；数值温和属正常——形态只是表达的一个模糊投影）')
-
-# ---- 稳健性复核：只在"干净"患者（test/val 来源）上重算图中那对 + 岭回归 ----
-ci = [i for i, c in enumerate(cases) if clean_case[c]]
-print(f'\n== 稳健性复核：剔除含泄漏切片的 {len(cases)-len(ci)} 个患者，仅用干净 n={len(ci)} ==')
-Zc = Z[ci]
-yc_fig = logE.loc[g_show, [cases[i] for i in ci]].values
-r_c, p_c = spearmanr(Zc[:, pc_show - 1], yc_fig)
-print(f'  图右那对（PC{pc_show} × {g_show}）：干净子集 r={r_c:+.2f}, p={p_c:.1e}'
-      f'（全体 r={r_show:+.2f} → 方向/量级一致即说明结论不是泄漏造成的）')
-yc = logE.loc['NKX2-1', [cases[i] for i in ci]].values
-scores_c = cross_val_score(RidgeCV(alphas=np.logspace(-2, 3, 20)), Zc[:, :5], yc, cv=5, scoring='r2')
-print(f'  岭回归干净子集 5折CV R²: {scores_c.mean():.2f} ± {scores_c.std():.2f}（全体 {scores.mean():.2f}）')
-print('\n✅ 图已保存:', f'{OUT}/markers_boxplot.png,', f'{OUT}/morph_vs_expr.png')
+# ---------- 6. 图 ----------
+if assoc is not None:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    ax = axes[0]
+    for v, name, c in [(0, 'LUAD', '#d62728'), (1, 'LUSC', '#1f77b4')]:
+        ax.scatter(Z[lab == v, 0], Z[lab == v, 1], s=25, alpha=0.7, c=c, label=name)
+    ax.set_xlabel(f'形态 PC1（{evr[0]:.1%}）')
+    ax.set_ylabel(f'形态 PC2（{evr[1]:.1%}）')
+    ax.set_title('meanpool 形态嵌入 PCA（每点一个患者）')
+    ax.legend()
+    ax = axes[1]
+    M = assoc.pivot(index='gene', columns='pc', values='rho').loc[markers]
+    Q = assoc.pivot(index='gene', columns='pc', values='q_BH').loc[markers]
+    im = ax.imshow(M.values, cmap='RdBu_r', vmin=-0.6, vmax=0.6, aspect='auto')
+    for i in range(M.shape[0]):
+        for j in range(M.shape[1]):
+            if Q.values[i, j] < 0.05:
+                ax.text(j, i, '*', ha='center', va='center', fontsize=12)
+    ax.set_xticks(range(M.shape[1]), [f'PC{j}' for j in M.columns])
+    ax.set_yticks(range(M.shape[0]), M.index)
+    ax.set_title('Spearman ρ：形态 PC × marker（* = BH q<0.05，全部检验一起校正）')
+    fig.colorbar(im, ax=ax, fraction=0.03)
+    fig.tight_layout()
+    fig.savefig(OUT / 'morph_vs_expr.png', dpi=110, bbox_inches='tight')
+    plt.close(fig)
+print('\n✅ 产物已写入', OUT)

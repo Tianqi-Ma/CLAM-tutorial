@@ -9,6 +9,17 @@ Usage:
   python download_tcga.py --query-only     # show counts/sizes, no download
   python download_tcga.py                  # full run (resumable via manifest)
   python download_tcga.py --n 30           # 30 slides per class instead of 50
+  python download_tcga.py --metadata-only  # only refresh GDC metadata for the existing dataset csv:
+                                           #   clinical.json (now with follow_ups) + rna_files.csv; no file downloads
+
+2026-10 audit fixes:
+  - clinical query now expands follow_ups. TCGA-LUAD keeps days_to_follow_up there; without it every
+    living LUAD patient looked like "no follow-up" and the survival analysis kept only LUAD deaths.
+  - RNA-seq query is restricted to sample_type = Primary Tumor, and file -> sample metadata
+    (sample barcode, sample type) is saved to metadata/rna_files.csv. Before, 167 files for 144 cases
+    (tumor + solid tissue normal + recurrence) were saved under the case id only and the analysis
+    scripts could not tell which one was the tumor.
+  - OUT can be overridden with the CLAM_TUTORIAL_DATA environment variable.
 """
 import argparse
 import json
@@ -23,7 +34,8 @@ CURL = r"C:\Windows\System32\curl.exe"
 PROXY = os.environ.get("GDC_PROXY", "")
 PROXY_ARGS = ["-x", PROXY] if PROXY else []
 BASE = "https://api.gdc.cancer.gov"
-OUT = r"E:\Projects\DP\CLAM-tutorial\data"
+OUT = os.environ.get("CLAM_TUTORIAL_DATA",
+                     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"))
 SLIDE_DIR = os.path.join(OUT, "slides", "tcga")
 META_DIR = os.path.join(OUT, "metadata")
 EXPR_DIR = os.path.join(META_DIR, "expression")
@@ -74,6 +86,68 @@ def query_slides(project):
     return rows
 
 
+def fetch_clinical(uuids):
+    """Clinical metadata for the given case uuids, including follow_ups (one bulk request)."""
+    clin = curl_json(f"{BASE}/cases", {
+        "filters": {"op": "in", "content": {"field": "case_id", "value": uuids}},
+        "expand": "demographic,diagnoses,exposures,follow_ups",
+        "format": "JSON", "size": "2000",
+    })
+    with open(os.path.join(META_DIR, "clinical.json"), "w") as f:
+        json.dump(clin["data"]["hits"], f, indent=1)
+    n_fu = sum(1 for c in clin["data"]["hits"] if c.get("follow_ups"))
+    log(f"clinical.json: {len(clin['data']['hits'])} cases ({n_fu} with follow_ups)")
+
+
+def query_rna_files(uuids, primary_only=True):
+    """STAR-Counts files for the cases, with sample barcode and sample type."""
+    content = [
+        {"op": "in", "content": {"field": "cases.case_id", "value": uuids}},
+        {"op": "=", "content": {"field": "data_type", "value": "Gene Expression Quantification"}},
+        {"op": "=", "content": {"field": "analysis.workflow_type", "value": "STAR - Counts"}},
+        {"op": "=", "content": {"field": "access", "value": "open"}},
+    ]
+    if primary_only:
+        content.append({"op": "=", "content": {"field": "cases.samples.sample_type", "value": "Primary Tumor"}})
+    hits = curl_json(f"{BASE}/files", {
+        "filters": {"op": "and", "content": content},
+        "fields": "file_id,file_name,file_size,cases.submitter_id,cases.samples.submitter_id,cases.samples.sample_type",
+        "format": "JSON", "size": "5000",
+    })["data"]["hits"]
+    rows = []
+    for h in hits:
+        case = h["cases"][0]
+        sample = (case.get("samples") or [{}])[0]
+        rows.append({"file_id": h["file_id"], "file_name": h["file_name"], "file_size": h["file_size"],
+                     "case_id": case["submitter_id"], "sample_submitter_id": sample.get("submitter_id", ""),
+                     "sample_type": sample.get("sample_type", "")})
+    return rows
+
+
+def write_rna_manifest(rows):
+    path = os.path.join(META_DIR, "rna_files.csv")
+    with open(path, "w") as f:
+        f.write("file_id,file_name,case_id,sample_submitter_id,sample_type\n")
+        for r in rows:
+            f.write(f"{r['file_id']},{r['file_name']},{r['case_id']},{r['sample_submitter_id']},{r['sample_type']}\n")
+    types = {}
+    for r in rows:
+        types[r["sample_type"]] = types.get(r["sample_type"], 0) + 1
+    log(f"rna_files.csv: {len(rows)} files {types}")
+
+
+def case_uuids_from_csv():
+    """Case uuids for the cases already in the dataset csv (used by --metadata-only)."""
+    csv_path = os.path.join(CSV_DIR, "tcga_luad_lusc.csv")
+    cases = sorted({line.split(",")[0] for line in open(csv_path).read().splitlines()[1:] if line})
+    hits = curl_json(f"{BASE}/cases", {
+        "filters": {"op": "in", "content": {"field": "submitter_id", "value": cases}},
+        "fields": "case_id,submitter_id", "format": "JSON", "size": "2000",
+    })["data"]["hits"]
+    log(f"dataset csv: {len(cases)} cases -> {len(hits)} GDC case uuids")
+    return sorted(h["case_id"] for h in hits)
+
+
 def download_file(file_id, dest, expected_size=None):
     """curl with resume; returns True on success."""
     if expected_size and os.path.exists(dest) and os.path.getsize(dest) == expected_size:
@@ -96,10 +170,20 @@ def main():
     ap.add_argument("--n", type=int, default=50, help="slides per class")
     ap.add_argument("--min-size", type=float, default=0.3, help="min slide size in GB")
     ap.add_argument("--query-only", action="store_true")
+    ap.add_argument("--metadata-only", action="store_true",
+                    help="refresh clinical.json (with follow_ups) and rna_files.csv for the existing dataset csv")
     args = ap.parse_args()
 
     os.makedirs(SLIDE_DIR, exist_ok=True)
     os.makedirs(EXPR_DIR, exist_ok=True)
+
+    if args.metadata_only:
+        uuids = case_uuids_from_csv()
+        fetch_clinical(uuids)
+        # all sample types, so files already on disk (incl. normals) can be labelled
+        write_rna_manifest(query_rna_files(uuids, primary_only=False))
+        log("metadata refreshed (no files downloaded)")
+        return
 
     # 1. query slides
     all_rows = []
@@ -164,36 +248,19 @@ def main():
                 f.write(f"{r['case_id']},{sid},{r['label']}\n")
     log(f"dataset csv -> {csv_path}")
 
-    # 4. clinical metadata (one bulk request)
+    # 4. clinical metadata (one bulk request, with follow_ups)
     uuids = sorted({r["case_uuid"] for r in all_rows})
-    clin = curl_json(f"{BASE}/cases", {
-        "filters": {"op": "in", "content": {"field": "case_id", "value": uuids}},
-        "expand": "demographic,diagnoses,exposures",
-        "format": "JSON", "size": "2000",
-    })
-    with open(os.path.join(META_DIR, "clinical.json"), "w") as f:
-        json.dump(clin["data"]["hits"], f, indent=1)
-    log(f"clinical.json: {len(clin['data']['hits'])} cases")
+    fetch_clinical(uuids)
 
-    # 5. RNA-seq STAR counts for the same cases
-    hits = curl_json(f"{BASE}/files", {
-        "filters": {"op": "and", "content": [
-            {"op": "in", "content": {"field": "cases.case_id", "value": uuids}},
-            {"op": "=", "content": {"field": "data_type", "value": "Gene Expression Quantification"}},
-            {"op": "=", "content": {"field": "analysis.workflow_type", "value": "STAR - Counts"}},
-            {"op": "=", "content": {"field": "access", "value": "open"}},
-        ]},
-        "fields": "file_id,file_name,file_size,cases.submitter_id",
-        "format": "JSON", "size": "2000",
-    })["data"]["hits"]
-    log(f"expression files: {len(hits)}")
+    # 5. RNA-seq STAR counts (primary tumor only) for the same cases + file -> sample manifest
+    rows = query_rna_files(uuids, primary_only=True)
+    write_rna_manifest(rows)
     ok_n = 0
-    for h in hits:
-        case_sub = h["cases"][0]["submitter_id"]
-        dest = os.path.join(EXPR_DIR, f"{case_sub}__{h['file_name']}")
-        if download_file(h["file_id"], dest, h["file_size"]):
+    for r in rows:
+        dest = os.path.join(EXPR_DIR, f"{r['case_id']}__{r['file_name']}")
+        if download_file(r["file_id"], dest, r["file_size"]):
             ok_n += 1
-    log(f"expression downloaded: {ok_n}/{len(hits)}")
+    log(f"expression downloaded: {ok_n}/{len(rows)}")
     log("ALL DONE")
 
 

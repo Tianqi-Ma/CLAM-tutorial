@@ -463,3 +463,35 @@ Windows 的 DataLoader worker→主进程共享内存走页面文件，16GB 内�
   - cox：分期 HR=1.29 p=0.084；OOF C-index 临床 0.561/形态 0.500/联合 0.517；风险分层 KM p=0.92——再次确认**分型特征 ≠ 预后特征**
 - **热图**：MC150 fold-4 模型对 splits_4.csv 测试集出 4 张（2 LUAD + 2 LUSC）→ `results/heatmaps/`
 - **文档**：notebook 35→42 cells（新增严格划分、§8b DE、§8c 形态预测、§9b Cox，15 张新图全部嵌入），README 重写为 150 口径，100 时代产物全部归档（`*_mc100`/`*_strict100`/`survival_100`）
+
+## 24. 2026-10 审计勘误（2026-10-09）
+
+审计只读代码、仓库里已提交的输入和输出，没有重新下载数据、没有重跑真实分析。下面更正前文的说法，前文原样保留作记录。
+
+**前期流程**
+- 第 0 节名词与 §5 的"ResNet50 在 1400 万张图上预训练"有误：CLAM 用的是 torchvision 的 ImageNet-1k 权重（`resnet50.tv_in1k`，约 128 万张、1000 类）；新版 CLAM 默认先把 256 像素的 patch 缩到 224 再提特征。
+- 切块在 level 0 做，没有统一倍率：TCGA 切片混有 40×（约 0.25 µm/像素）和 20×（约 0.5 µm/像素），同样 256 像素覆盖面积差 4 倍。新增 `scripts/check_slide_mpp.py` 查分布。
+- 43 个组织来源中心（TSS）每个只贡献一种亚型；严格 5 折下 138/150 张测试切片的中心在训练集出现过。新增 `make_strict_splits.py --group-by site`（Howard et al. 2021 Nat Commun 的 site-preserved CV）和 `eval_cv_summary.py`。
+- 严格 5 折每折 AUC 均值 0.834，但池化 AUC 0.783，患者级 AUC 0.775（bootstrap 95% CI 0.70–0.85）；阈值 0.5 的准确率 0.713，概率偏向 LUSC。
+- 用 sklearn 1.9.1、同一 seed 重新跑 `make_strict_splits.py`，得到的划分和本项目的不一致——划分文件需要入库。
+- `make_heatmap.py` 把 `Y_prob`（已是 softmax 概率）又做了一次 softmax，标题概率被压向 0.5。4 张示例热图里 TCGA-98-A53H 是 LUSC 却被判为 LUAD（p=0.504）。
+- §18 / notebook §3d 的特征 PCA 只用了 1 张 LUAD + 1 张 LUSC，不能说明"特征带癌种信息"。
+
+**多组学（§19、§22、§23）**
+- 167 个 RNA-seq 文件对应 144 个患者（原发 01 / 癌旁正常 11 / 复发 02），脚本按患者覆盖写入，可能用了癌旁正常样本。`download_tcga.py` 现在只下原发肿瘤并保存 `rna_files.csv`。
+- 嵌入"零泄漏"只解决了测试集问题，却引入了新问题：每张切片用自己测试折的模型提嵌入，5 个模型的空间不同。v1 嵌入的 PC2–PC5 有 81–97% 方差可由折号解释（`scripts/audit_v1_embedding_folds.py`）。
+- §22"泄漏的实锤教训"与 §19 自相矛盾：§19 的干净子集 R² 反而从 0.11 升到 0.17。R² 从 +0.11 变成 −0.09 来自嵌入来源和样本的变化，不是泄漏被去掉。
+- "Top200 ∩ DE（OR 17.4 / 23.5）是形态≅分子的独立证据"是循环论证：嵌入为分 LUAD/LUSC 训练，自然能预测亚型差异基因。
+- DE 的 log2FC 用算术均值计算，会被极端样本拉大（SST log2FC 5.8 而 q=0.29）；Enrichr 只送 top 200、背景是全基因组；"LUSC 侧 p53/KRAS Dn/Apical Junction 符合生物学常识"说过头了。
+
+**生存（§20、§22、§23）**
+- "26 例 Alive LUAD 无随访"不是 GDC 数据的非随机缺失，而是下载脚本请求临床数据时没 expand `follow_ups`：150 张时代是 44 例活着的 LUAD 没有随访，留下的 26 例 LUAD 全是死亡病例。KM、Cox、"诚实阴性"的 C-index 全部作废。
+- `gender` 已改名 `sex_at_birth`；分期应取原发诊断（本数据集只影响 1 人）。
+
+**玩具版 notebook（§9、§11）**
+- TITAN 玩具没有位置编码，被遮 patch 无法利用邻居，重建误差停在约 1.07（只能猜整张切片的平均）；加 1D ALiBi 后 0.29。提取指纹前缺 `model.eval()`。真实 TITAN 切片编码器约 4850 万参数（不是"亿级"），第一阶段是 iBOT 自蒸馏。
+- CLAM 玩具原来只报训练准确率；加独立考试卷后，1% 肿瘤占比时注意力在考试卷上接近瞎猜（训练准确率 86.5% 是记住了训练集）。
+- UNI2 玩具：MLP 参数 259（不是"约 200"）；iBOT 预测老师网络的分布而非像素；UNI2-h 模型卡没写器官数和增强细节。
+- CONCH 玩具：Linear(4→2) 是 10 个参数；损失下限 log(600)。
+
+改动全部在 2026-10-09 的提交里：`scripts/common.py`、`embed_slides.py`、`eval_cv_summary.py`、`check_slide_mpp.py`、`audit_v1_embedding_folds.py` 为新增，五个 analysis 脚本重写为 v2，v1 产物移到 `results/archive_v1/`。v2 脚本在合成数据上跑通，真实数据需在本机重跑。

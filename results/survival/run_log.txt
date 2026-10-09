@@ -1,18 +1,15 @@
-== 第一步：检查缺失模式（这是本分析最重要的一张表）==
-97 个患者中 99 个有完整生存记录，45 个因无随访时间被剔除
-被剔除病例的构成：
-label  vital
-LUAD   Alive    44
-LUSC   Dead      1
-→ 26 例被剔除者全是 Alive 的 LUAD！缺失不是随机的：它们都活着，剔除后 LUAD 曲线必然假性偏糟。
+# analysis_survival.py v2 在仓库现有 clinical.json（没有 follow_ups）上的输出：缺失检查不通过，按设计停止。
+患者 144 例；生存终点来源: {'GDC': 144}
+性别: {'male': 86, 'female': 58}；分期组: {'I': 76, 'II': 40, 'III-IV': 25, nan: 3}
 
-== 分期 KM（主分析）==
-各期例数: {'I': 51, 'II': 28, 'III': 15, 'IV': 2}
-Stage I vs III: log-rank p=0.26（曲线方向正确；样本量小未达显著，符合预期）
+== 第一步：按亚型检查生存终点缺失 ==
+label  n  missing  missing_frac                 reasons
+ LUAD 70       44         0.629       Alive 但无任何随访天数=44
+ LUSC 74        1         0.014 Dead 但无 days_to_death=1
+  LUAD 有终点的 26 例中事件 26 例（事件率 100%）
+  LUSC 有终点的 73 例中事件 35 例（事件率 48%）
 
-== LUAD vs LUSC（教学演示，结论无效）==
-表面上: LUAD 中位 1.2 年 vs LUSC 3.0 年, p=0.000
-但这个"显著差异"完全是缺失数据造成的假象——被剔除的 26 例全是活着的 LUAD。
-教训：KM 之前先按 标签×结局 交叉检查缺失构成，缺失不随机时任何曲线都可能撒谎。
-
-✅ 图已保存: E:/Projects/DP/CLAM-tutorial/results/survival/km_by_stage.png, E:/Projects/DP/CLAM-tutorial/results/survival/km_luad_vs_lusc.png
+⚠️ 缺失不平衡，生存分析不可用。常见原因是临床数据没有取全：
+   1) python scripts/download_tcga.py --metadata-only   重新取 clinical.json（带 follow_ups）
+   2) 或把 TCGA-CDR 表（Liu et al. 2018 Cell 补充表 S1）另存为 data/metadata/TCGA-CDR.csv
+   本次只输出缺失表。确认要看（无效的）曲线请加 --force。

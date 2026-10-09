@@ -1,140 +1,205 @@
 # -*- coding: utf-8 -*-
-"""多组学深入版①：全基因组差异表达（DE）+ 通路富集
-1. LUAD vs LUSC 全基因组 Mann-Whitney 检验（19,938 个蛋白编码基因，log1p TPM）
-   - 效应量: log2FC = log2((meanA+1)/(meanB+1))；低表达基因先过滤（两组均值都 <1 TPM 的扔掉）
-   - 多重检验: Benjamini-Hochberg FDR（手写 10 行，不依赖 statsmodels）
-2. 火山图 + 显著基因表（de_table.csv）；已知 marker 应排在顶部 = 方法学自检
-3. 富集分析：每方向上 top 200 基因送 Enrichr（curl 走系统 schannel，绕开本机 pip-TLS 怪癖）；
-   网络失败时优雅降级（打印说明跳过，不影响主流程）
-产物: results/multiomics/de_volcano.png, de_table.csv, enrich_*.csv / enrich_barplot.png
+"""多组学②：全基因组差异表达（DE）+ 通路富集（v2，2026-10 审计后重写）
+
+方法：
+  1. 每个患者一个原发肿瘤样本（common.load_expression；v1 可能混入癌旁正常样本）。
+  2. 过滤：至少 20% 的患者 TPM ≥ 1。
+  3. 检验：log2(TPM+1) 上逐基因 Wilcoxon 秩和检验（Mann-Whitney），BH 校正。
+     每组 70 例以上的人群样本，秩检验比 DESeq2/edgeR 的参数模型更能控制假阳性
+     （Li et al. 2022, Genome Biology 23:79）。
+  4. 效应量：两组 log2(TPM+1) 均值之差（≈ 几何均值的 log2 倍数变化）。
+     v1 用 log2((算术均值A+1)/(算术均值B+1))，会被少数极端样本拉大：SST 的"log2FC=5.8"其实 q=0.29。
+  5. 富集：
+     a. 过表达分析（ORA）：用全部显著基因，背景 = 通过过滤、真正参与检验的基因，超几何检验 + BH。
+        v1 每侧只送 top 200 给 Enrichr，背景是全基因组，没参与检验的低表达基因也被当成"背景"。
+     b. 预排序 GSEA（装了 gseapy 才跑）：全部基因按 sign(Δ)×−log10(p) 排序，不需要先定显著性阈值。
+     基因集：MSigDB Hallmark 2020 + Reactome 2022（Reactome 里有 Keratinization、Surfactant metabolism，
+     分别是 LUSC、LUAD 的阳性对照——富集方法靠不靠谱，先看阳性对照出没出来）。
+  ⚠️ 本数据集 43 个组织来源中心每个只贡献一种亚型，中心批次效应和亚型完全混在一起，DE 无法把两者分开；
+     marker 和阳性对照方向正确只能说明亚型信号占主导，不能说明没有批次成分。
+产物: results/multiomics/de_table.csv, de_volcano.png, enrich_ora.csv, enrich_gsea.csv（可选）, enrich_barplot.png
+用法: python scripts/analysis_de.py [--allow-ambiguous]
 """
-import sys, glob, os, json, subprocess, time
+import argparse
+import os
+import subprocess
+import sys
+import urllib.request
+
+import numpy as np
+import pandas as pd
+from scipy.stats import hypergeom, mannwhitneyu
+
+from common import (RESULTS, bh_fdr, describe_expression_report, load_dataset, load_expression, log_to,
+                    setup_matplotlib)
+
 sys.stdout.reconfigure(encoding='utf-8')
-import numpy as np, pandas as pd
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']; plt.rcParams['axes.unicode_minus'] = False
-from scipy.stats import mannwhitneyu
+plt = setup_matplotlib()
+ap = argparse.ArgumentParser()
+ap.add_argument('--allow-ambiguous', action='store_true')
+ap.add_argument('--min-frac', type=float, default=0.2, help='至少这么多比例的患者 TPM≥1 才检验')
+args = ap.parse_args()
+OUT = RESULTS / 'multiomics'
+GS_DIR = OUT / 'genesets'
+OUT.mkdir(parents=True, exist_ok=True)
+log_to(OUT / 'de_log.txt')
+LIBS = ['MSigDB_Hallmark_2020', 'Reactome_2022']
+CONTROLS = {'LUSC': ['Keratinization', 'Formation Of Cornified Envelope'], 'LUAD': ['Surfactant Metabolism']}
 
-PROJ = r'E:/Projects/DP/CLAM-tutorial'
-OUT  = f'{PROJ}/results/multiomics'
-CURL = r'C:\Windows\System32\curl.exe'
-os.makedirs(OUT, exist_ok=True)
+ds = load_dataset()
+label_of = ds.drop_duplicates('case_id').set_index('case_id')['label']
+E, rep = load_expression(cases=label_of.index, strict=not args.allow_ambiguous)
+print('表达矩阵:', describe_expression_report(rep))
+la = [c for c in E.columns if label_of[c] == 'LUAD']
+lb = [c for c in E.columns if label_of[c] == 'LUSC']
 
-csv = pd.read_csv(f'{PROJ}/data/dataset_csv/tcga_luad_lusc.csv')
-label_of_case = dict(zip(csv['case_id'], csv['label']))
-
-# ---------- 表达矩阵 ----------
-expr = {}
-for f in glob.glob(f'{PROJ}/data/metadata/expression/*.tsv'):
-    case = os.path.basename(f).split('__')[0]
-    df = pd.read_csv(f, sep='\t', comment='#', usecols=['gene_name', 'gene_type', 'tpm_unstranded'])
-    df = df[df['gene_type'] == 'protein_coding'].drop_duplicates('gene_name').set_index('gene_name')
-    expr[case] = df['tpm_unstranded']
-E = pd.DataFrame(expr)
-E = E[[c for c in E.columns if c in label_of_case]]
-la = [c for c in E.columns if label_of_case[c] == 'LUAD']
-lb = [c for c in E.columns if label_of_case[c] == 'LUSC']
-print(f'表达矩阵: {E.shape[0]} 基因 × {E.shape[1]} 患者（LUAD {len(la)} / LUSC {len(lb)}）')
-
-# ---------- 1. 全基因组 DE ----------
-meanA, meanB = E[la].mean(1), E[lb].mean(1)
-keep = (meanA >= 1) | (meanB >= 1)                    # 低表达过滤
-G = E[keep]
-log2fc = np.log2((meanA[keep] + 1) / (meanB[keep] + 1))
-print(f'低表达过滤后 {len(G)} 基因进入检验（{int((~keep).sum())} 个两组都 <1 TPM 被剔除）')
-logG = np.log1p(G)
-pvals = np.empty(len(G))
-for i, g in enumerate(G.index):
-    pvals[i] = mannwhitneyu(logG.loc[g, la], logG.loc[g, lb]).pvalue
-    if i % 5000 == 4999: print(f'  {i+1}/{len(G)} ...')
-
-# Benjamini-Hochberg FDR
-order = np.argsort(pvals)
-ranked = pvals[order] * len(pvals) / (np.arange(len(pvals)) + 1)
-ranked = np.minimum.accumulate(ranked[::-1])[::-1]    # 单调化
-qvals = np.empty(len(pvals)); qvals[order] = np.clip(ranked, 0, 1)
-
-de = pd.DataFrame({'gene': G.index, 'mean_LUAD': meanA[keep].round(2), 'mean_LUSC': meanB[keep].round(2),
-                   'log2FC_LUAD_vs_LUSC': log2fc.round(3), 'p': pvals, 'q_BH': qvals}).set_index('gene')
-de = de.sort_values('q_BH')
-de.to_csv(f'{OUT}/de_table.csv')
+# ---------- 1. DE ----------
+keep = (E >= 1).mean(axis=1) >= args.min_frac
+G = np.log2(E[keep] + 1)
+print(f'{E.shape[0]} 个蛋白编码基因 × {E.shape[1]} 患者（LUAD {len(la)} / LUSC {len(lb)}）；'
+      f'过滤后 {len(G)} 个基因参与检验')
+p = mannwhitneyu(G[la].values, G[lb].values, axis=1).pvalue
+de = pd.DataFrame({'mean_log2tpm_LUAD': G[la].mean(axis=1), 'mean_log2tpm_LUSC': G[lb].mean(axis=1),
+                   'median_TPM_LUAD': E.loc[G.index, la].median(axis=1),
+                   'median_TPM_LUSC': E.loc[G.index, lb].median(axis=1)})
+de['log2FC_LUAD_vs_LUSC'] = de['mean_log2tpm_LUAD'] - de['mean_log2tpm_LUSC']
+de['p'] = p
+de['q_BH'] = bh_fdr(p)
+de.index.name = 'gene'
+de = de.sort_values('p')
+de.round({c: 4 for c in de.columns if c not in ('p', 'q_BH')}).to_csv(OUT / 'de_table.csv')   # p/q 不能四舍五入，否则小 p 全变 0
 sig = de[(de['q_BH'] < 0.05) & (de['log2FC_LUAD_vs_LUSC'].abs() > 1)]
-up_a = sig[sig['log2FC_LUAD_vs_LUSC'] > 0]; up_b = sig[sig['log2FC_LUAD_vs_LUSC'] < 0]
-print(f'\n显著基因（FDR<0.05 且 |log2FC|>1）: {len(sig)} 个 = LUAD高 {len(up_a)} + LUSC高 {len(up_b)}')
-print('\nLUAD 高表达 top 8:'); print(up_a.head(8).to_string())
-print('\nLUSC 高表达 top 8:'); print(up_b.head(8).to_string())
-for g in ['NKX2-1', 'TP63', 'KRT5', 'KRT6A']:
+up = {'LUAD': sig[sig['log2FC_LUAD_vs_LUSC'] > 0], 'LUSC': sig[sig['log2FC_LUAD_vs_LUSC'] < 0]}
+print(f"显著（q<0.05 且 |log2FC|>1）: {len(sig)} 个 = LUAD 高 {len(up['LUAD'])} + LUSC 高 {len(up['LUSC'])}")
+for g in ['NKX2-1', 'NAPSA', 'SFTPB', 'TP63', 'KRT5', 'KRT6A', 'SOX2', 'DSG3']:
     if g in de.index:
         r = de.loc[g]
-        print(f'  [自检] {g}: log2FC={r["log2FC_LUAD_vs_LUSC"]:+.2f}, q={r["q_BH"]:.1e}（应与已知方向一致）')
+        print(f"  [marker] {g:7s}: log2FC={r['log2FC_LUAD_vs_LUSC']:+.2f}, q={r['q_BH']:.1e}")
 
-# ---------- 2. 火山图 ----------
 fig, ax = plt.subplots(figsize=(9, 6.5))
-ns = de[de['q_BH'] >= 0.05]
-ax.scatter(ns['log2FC_LUAD_vs_LUSC'], -np.log10(ns['q_BH'] + 1e-300), s=4, c='#bbbbbb', alpha=0.4)
-ax.scatter(up_a['log2FC_LUAD_vs_LUSC'], -np.log10(up_a['q_BH']), s=6, c='#d62728', alpha=0.6, label=f'LUAD 高 ({len(up_a)})')
-ax.scatter(up_b['log2FC_LUAD_vs_LUSC'], -np.log10(up_b['q_BH']), s=6, c='#1f77b4', alpha=0.6, label=f'LUSC 高 ({len(up_b)})')
-for g in ['NKX2-1', 'TP63', 'KRT5', 'KRT6A', 'SFTPB', 'DSG3']:
+y = -np.log10(de['q_BH'].clip(lower=1e-300))
+ns = ~de.index.isin(sig.index)
+ax.scatter(de.loc[ns, 'log2FC_LUAD_vs_LUSC'], y[ns], s=4, c='#bbbbbb', alpha=0.4)
+for lab, c in [('LUAD', '#d62728'), ('LUSC', '#1f77b4')]:
+    ax.scatter(up[lab]['log2FC_LUAD_vs_LUSC'], y[up[lab].index], s=6, c=c, alpha=0.6,
+               label=f'{lab} 高 ({len(up[lab])})')
+for g in ['NKX2-1', 'NAPSA', 'TP63', 'KRT5', 'KRT6A', 'DSG3']:
     if g in de.index:
-        r = de.loc[g]
-        ax.annotate(g, (r['log2FC_LUAD_vs_LUSC'], -np.log10(r['q_BH'] + 1e-300)),
-                    fontsize=9, fontweight='bold', xytext=(4, 4), textcoords='offset points')
+        ax.annotate(g, (de.loc[g, 'log2FC_LUAD_vs_LUSC'], y[g]), fontsize=9, fontweight='bold',
+                    xytext=(4, 4), textcoords='offset points')
 ax.axhline(-np.log10(0.05), ls='--', c='gray', lw=0.8)
-ax.set_xlabel('log2FC（LUAD / LUSC）→ 右=腺癌高，左=鳞癌高'); ax.set_ylabel('-log10(FDR q)')
-ax.set_title(f'全基因组差异表达：LUAD vs LUSC（{len(la)} vs {len(lb)} 患者）\n'
-             f'{len(sig)} 个显著基因——两型肺癌的分子差异巨大，marker 自检全在顶部')
+ax.set_xlabel('log2FC（两组 log2(TPM+1) 均值之差；右 = LUAD 高）')
+ax.set_ylabel('-log10(BH q)')
+ax.set_title(f'LUAD vs LUSC 差异表达（Wilcoxon，{len(la)} vs {len(lb)} 例原发肿瘤）\n'
+             f'注意：组织来源中心与亚型完全重合，差异里可能含中心批次成分')
 ax.legend()
-fig.tight_layout(); fig.savefig(f'{OUT}/de_volcano.png', dpi=110, bbox_inches='tight'); plt.close(fig)
-print('\n火山图 -> de_volcano.png')
+fig.tight_layout()
+fig.savefig(OUT / 'de_volcano.png', dpi=110, bbox_inches='tight')
+plt.close(fig)
 
-# ---------- 3. Enrichr 富集（优雅降级） ----------
-def enrichr(genes, desc):
-    """送基因列表到 Enrichr，返回 Hallmark+KEGG 富集表；失败返回 None。"""
+
+# ---------- 2. 富集 ----------
+def fetch_library(lib):
+    """Enrichr 的基因集库（文本格式，一行一个基因集），缓存到 results/multiomics/genesets/。"""
+    GS_DIR.mkdir(exist_ok=True)
+    path = GS_DIR / f'{lib}.txt'
+    if not path.exists():
+        url = f'https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName={lib}'
+        try:
+            text = urllib.request.urlopen(url, timeout=60).read().decode('utf-8')
+        except Exception:
+            curl = r'C:\Windows\System32\curl.exe'           # 作者机器上 Python 的 TLS 会被中间设备掐断
+            if not os.path.exists(curl):
+                raise
+            text = subprocess.run([curl, '--ssl-no-revoke', '-sS', url], capture_output=True, text=True,
+                                  encoding='utf-8', timeout=120, check=True).stdout
+        path.write_text(text, encoding='utf-8')
+    sets = {}
+    for line in path.read_text(encoding='utf-8').splitlines():
+        parts = [x.split(',')[0] for x in line.split('\t') if x]
+        if len(parts) > 2:
+            sets[parts[0]] = set(parts[1:])
+    return sets
+
+
+def ora(genes, background, sets, lib):
+    genes = set(genes) & background
+    rows = []
+    for term, members in sets.items():
+        m = members & background
+        if len(m) < 10 or len(m) > 500:
+            continue
+        k = len(genes & m)
+        pval = hypergeom.sf(k - 1, len(background), len(m), len(genes)) if k else 1.0
+        rows.append({'library': lib, 'term': term, 'set_size': len(m), 'overlap': k,
+                     'expected': len(genes) * len(m) / len(background), 'p': pval,
+                     'genes': ','.join(sorted(genes & m)[:30])})
+    t = pd.DataFrame(rows)
+    t['q_BH'] = bh_fdr(t['p'])
+    return t.sort_values('p')
+
+
+background = set(de.index)
+libraries = {}
+for lib in LIBS:
     try:
-        lst = '\n'.join(genes)
-        r = subprocess.run([CURL, '--ssl-no-revoke', '-sS', '-X', 'POST',
-                            '-F', f'list={lst}', '-F', f'description={desc}',
-                            'https://maayanlab.cloud/Enrichr/addList'],
-                           capture_output=True, text=True, timeout=60)
-        uid = json.loads(r.stdout)['userListId']
-        frames = {}
-        for lib in ['MSigDB_Hallmark_2020', 'WikiPathway_2023_Human']:
-            r2 = subprocess.run([CURL, '--ssl-no-revoke', '-sS',
-                                 f'https://maayanlab.cloud/Enrichr/enrich?userListId={uid}&backgroundType={lib}'],
-                                capture_output=True, text=True, timeout=60)
-            d = json.loads(r2.stdout)[lib]
-            t = pd.DataFrame(d, columns=['rank', 'term', 'p', 'z', 'combined', 'genes', 'adj_p', 'x', 'y'])
-            t['library'] = lib
-            frames[lib] = t
-        return pd.concat(frames)
+        libraries[lib] = fetch_library(lib)
     except Exception as e:
-        print(f'  [降级] Enrichr 不可用（{type(e).__name__}: {str(e)[:80]}）——跳过富集，不影响主分析')
-        return None
+        print(f'  [跳过] 取不到基因集库 {lib}（{type(e).__name__}: {str(e)[:80]}）')
+ora_tabs = []
+for direction, genes in up.items():
+    for lib, sets in libraries.items():
+        t = ora(genes.index, background, sets, lib)
+        t.insert(0, 'direction', direction)
+        ora_tabs.append(t)
+if ora_tabs:
+    ora_all = pd.concat(ora_tabs)
+    ora_all.round({'expected': 2}).to_csv(OUT / 'enrich_ora.csv', index=False)
+    print('\n== ORA（显著基因 vs 参与检验的背景，超几何 + BH）==')
+    for direction in up:
+        top = ora_all[(ora_all['direction'] == direction)].sort_values('p').head(6)
+        for _, r in top.iterrows():
+            print(f"  {direction} [{r['library'].split('_')[0]}] {r['term'][:60]}: "
+                  f"{r['overlap']}/{r['set_size']}（期望 {r['expected']:.1f}），q={r['q_BH']:.1e}")
+    print('  阳性对照:')
+    for direction, terms in CONTROLS.items():
+        for term in terms:
+            hit = ora_all[(ora_all['direction'] == direction) & ora_all['term'].str.startswith(term)]
+            if len(hit):
+                r = hit.iloc[0]
+                print(f"    {direction} 侧 {r['term'][:60]}: q={r['q_BH']:.1e}")
+            else:
+                print(f'    {direction} 侧 {term}: 基因集库里没找到')
 
-tops = {'LUAD': up_a.head(200).index.tolist(), 'LUSC': up_b.head(200).index.tolist()}
-enrs = {}
-for lab, genes in tops.items():
-    if len(genes) < 20:
-        print(f'  {lab} 显著基因太少（{len(genes)}），跳过富集'); continue
-    print(f'\n== Enrichr：{lab} 方向 top {len(genes)} 基因 ==')
-    enr = enrichr(genes, f'{lab}_up')
-    if enr is None: continue
-    enr.to_csv(f'{OUT}/enrich_{lab}.csv', index=False)
-    enrs[lab] = enr
-    show = enr[enr['library'] == 'MSigDB_Hallmark_2020'].head(5)
-    for _, r in show.iterrows():
-        print(f'  [Hallmark] {r["term"]}: q={r["adj_p"]:.1e}, 命中 {len(r["genes"])} 基因')
-
-if len(enrs) == 2:
     fig, axes = plt.subplots(1, 2, figsize=(15, 5.5))
-    for ax, (lab, color) in zip(axes, [('LUAD', '#d62728'), ('LUSC', '#1f77b4')]):
-        h = enrs[lab][enrs[lab]['library'] == 'MSigDB_Hallmark_2020'].head(8).iloc[::-1]
-        ax.barh(range(len(h)), -np.log10(h['adj_p'] + 1e-300), color=color, alpha=0.8)
-        ax.set_yticks(range(len(h)), [t.replace('HALLMARK_', '').replace('_', ' ').title() for t in h['term']], fontsize=9)
-        ax.set_xlabel('-log10(FDR q)')
-        ax.set_title(f'{lab} 高表达基因的 Hallmark 通路富集\n（top200 基因 → 这些生物过程在该型更活跃）')
-    fig.tight_layout(); fig.savefig(f'{OUT}/enrich_barplot.png', dpi=110, bbox_inches='tight'); plt.close(fig)
-    print('\n富集条形图 -> enrich_barplot.png')
-print('\n✅ DE 分析完成')
+    for ax, (direction, color) in zip(axes, [('LUAD', '#d62728'), ('LUSC', '#1f77b4')]):
+        h = ora_all[ora_all['direction'] == direction].sort_values('p').head(10).iloc[::-1]
+        ax.barh(range(len(h)), -np.log10(h['q_BH'].clip(lower=1e-300)), color=color, alpha=0.8)
+        ax.set_yticks(range(len(h)), [t[:55] for t in h['term']], fontsize=8)
+        ax.axvline(-np.log10(0.05), ls='--', c='gray', lw=0.8)
+        ax.set_xlabel('-log10(BH q)')
+        ax.set_title(f'{direction} 高表达基因的 ORA（Hallmark + Reactome，背景 = 参与检验的基因）', fontsize=9)
+    fig.tight_layout()
+    fig.savefig(OUT / 'enrich_barplot.png', dpi=110, bbox_inches='tight')
+    plt.close(fig)
+
+try:
+    import gseapy
+    # 秩检验的 p 值经常并列（U 统计量是整数），加一个按效应量的微小扰动打破并列
+    rnk = (np.sign(de['log2FC_LUAD_vs_LUSC']) * -np.log10(de['p'].clip(lower=1e-300))
+           + 1e-6 * de['log2FC_LUAD_vs_LUSC']).sort_values(ascending=False)
+    gsea_tabs = []
+    for lib, sets in libraries.items():
+        res = gseapy.prerank(rnk=rnk, gene_sets={k: list(v) for k, v in sets.items()}, min_size=10, max_size=500,
+                             permutation_num=1000, seed=0, outdir=None, verbose=False)
+        t = res.res2d.copy()
+        t.insert(0, 'library', lib)
+        gsea_tabs.append(t)
+    gsea = pd.concat(gsea_tabs)
+    gsea.to_csv(OUT / 'enrich_gsea.csv', index=False)
+    print('\n== 预排序 GSEA（NES>0 = LUAD 侧富集）==')
+    for _, r in gsea.sort_values('FDR q-val').head(10).iterrows():
+        print(f"  [{r['library'].split('_')[0]}] {r['Term'][:60]}: NES={float(r['NES']):+.2f}, FDR={float(r['FDR q-val']):.1e}")
+except ImportError:
+    print('\n[提示] 没装 gseapy，跳过预排序 GSEA（pip install gseapy 后重跑即可）')
+print('\n✅ DE 分析完成 →', OUT)

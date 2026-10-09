@@ -4,9 +4,13 @@ data/slides/
 # RNA-seq 表达谱 ~460MB（同一下载脚本会一并获取）
 data/metadata/*
 !data/metadata/clinical.json
+# RNA 文件 ↔ 样本类型的元数据很小，入库（download_tcga.py --metadata-only 生成）
+!data/metadata/rna_files.csv
 # 特征 44GB + patch 坐标 776MB（notebook §3 两步重新生成）
 results/tcga/features/
 results/tcga/patching/
+# Enrichr 基因集库缓存（analysis_de.py 自动下载）
+results/multiomics/genesets/
 # 冒烟测试产物
 results/cmu_test/
 # 离线 wheel 安装包

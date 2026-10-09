@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """轻量注意力热图：复用已有特征，无需重跑特征提取。
 用法: python make_heatmap.py <slide_id前23字符> <checkpoint> <输出目录>
-原理: A = model(h, attention_only=True) 拿到每个 patch 的注意力分数,
+原理: A = model(h, attention_only=True) 拿到每个 patch 的注意力分数（softmax 之前的原始分）,
       按 patching 阶段的 coords 画回切片缩略图, jet 色标 + alpha 叠加。
+读图注意（2026-10 审计补充）:
+  - checkpoint 要用"这张切片在其测试集里"的那一折，否则画的是模型在训练数据上的注意力。
+  - CLAM_SB 只有一个注意力分支，LUAD 和 LUSC 的证据都会得高分；高注意力 = 对切片表示贡献大，
+    不等于"像癌"，也可能落在出血、炭末、褶皱等伪影上。标题里的概率接近 0.5 时热图尤其不可读。
+  - 2026-10 修正：v1 把 Y_prob（模型输出已经是 softmax 概率）又做了一次 softmax，标题概率被压向 0.5。
 """
 import sys, os
 import numpy as np
@@ -17,14 +22,15 @@ plt.rcParams['axes.unicode_minus'] = False
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 
-sys.path.insert(0, r'E:/Projects/DP/CLAM')
+from common import CLAM_DIR, ROOT, LABELS
+
+sys.path.insert(0, str(CLAM_DIR))
 from models.model_clam import CLAM_SB
 from topk.svm import SmoothTop1SVM
 
-PROJ = r'E:/Projects/DP/CLAM-tutorial'
-D_PT   = f'{PROJ}/results/tcga/features/pt_files'
-D_H5   = f'{PROJ}/results/tcga/patching/patches'
-D_SVS  = f'{PROJ}/data/slides/tcga'
+D_PT   = f'{ROOT}/results/tcga/features/pt_files'
+D_H5   = f'{ROOT}/results/tcga/patching/patches'
+D_SVS  = f'{ROOT}/data/slides/tcga'
 PATCH  = 256          # patching 时的 patch_size (level 0)
 VIS_DS = 32           # 可视化降采样倍数
 ALPHA  = 0.45
@@ -44,8 +50,8 @@ def main(slide_prefix, ckpt, out_dir):
     with torch.no_grad():
         A = model(h, attention_only=True).squeeze().cpu().numpy()   # (N,)
         logits, Y_prob, *_ = model(h)
-    prob = Y_prob[0].softmax(0).numpy()
-    pred = ['LUAD', 'LUSC'][int(prob.argmax())]
+    prob = Y_prob[0].numpy()                     # Y_prob 已经是 softmax 概率，不要再 softmax
+    pred = LABELS[int(prob.argmax())]
 
     # 2) 坐标 + 缩略图
     with h5py.File(f'{D_H5}/{sid}.h5', 'r') as f:
