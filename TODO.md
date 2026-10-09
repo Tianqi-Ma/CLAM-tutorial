@@ -62,11 +62,11 @@
   ```
   python main.py --drop_out 0.25 --early_stopping --lr 2e-4 --k 5 --exp_code luad_lusc_CLAM_sb_site --split_dir task_2_site150 --weighted_sample --bag_loss ce --inst_loss svm --task task_2_tumor_subtyping --model_type clam_sb --subtyping --embed_dim 1024 --data_root_dir E:/Projects/DP/CLAM-tutorial/results/tcga/features --k_start 0 --k_end 1
   ```
-- [ ] **评估**：注意坑 #12，`--splits_dir` 要给完整路径，并且不加 `--subtyping`。
+- [x] **评估**：注意坑 #12，`--splits_dir` 要给完整路径，并且不加 `--subtyping`。
   ```
   python eval.py --k 5 --models_exp_code luad_lusc_CLAM_sb_site_s1 --save_exp_code luad_lusc_CLAM_sb_site_s1_cv --splits_dir E:/Projects/DP/CLAM/splits/task_2_site150 --task task_2_tumor_subtyping --model_type clam_sb --results_dir results --embed_dim 1024 --data_root_dir E:/Projects/DP/CLAM-tutorial/results/tcga/features
   ```
-- [ ] **整理结果**：把 `CLAM/eval_results/EVAL_luad_lusc_CLAM_sb_site_s1_cv/` 里的 `fold_*.csv` 和 `summary.csv` 复制到仓库的 `results/eval_site150/`，然后运行：
+- [x] **整理结果**：把 `CLAM/eval_results/EVAL_luad_lusc_CLAM_sb_site_s1_cv/` 里的 `fold_*.csv` 和 `summary.csv` 复制到仓库的 `results/eval_site150/`，然后运行：
   ```
   python scripts/eval_cv_summary.py --eval-dir results/eval_site150
   ```
@@ -74,19 +74,19 @@
 
 ## 第 6 步：按需做
 
-- [ ] **重画热图**：用修好的 `scripts/make_heatmap.py` 重画。
+- [x] **重画热图**：用修好的 `scripts/make_heatmap.py` 重画。
   - 示例切片建议从 `results/eval_strict150/fold_*.csv` 里挑模型很确定的（p 接近 0 或 1），并用这张切片所在测试折的模型。
 - [ ] **统一倍率**（决定不做，留作已知限制）：第 2 步发现 142 张 40× + 8 张 20×（7 LUSC / 1 LUAD）。只涉及 8 张，重切+重提特征+重训成本远超收益，记录在 README 审计表。只有第 2 步发现倍率混杂时才做。把 40× 切片改成切 512 像素的方块（提特征时会统一缩到 224），再重新提特征、重新训练。工作量大，可以排在最后。
 
 ## 第 7 步：提交结果
 
-- [ ] **提交并推送新产物**（用个人账号），包括：
+- [x] **提交并推送新产物**（用个人账号），包括：
   - `data/metadata/clinical.json`、`data/metadata/rna_files.csv`；
   - `results/embeddings/`、`results/multiomics/`、`results/survival/`；
   - `results/eval_site150/`、`results/tcga/slide_mpp.csv`；
   - `splits/`。
-- [ ] **更新文档**：根据新结果更新这些地方：
+- [x] **更新文档**：根据新结果更新这些地方：
   - 主 notebook §6（加按医院分组的成绩）；
   - §8、§9（把 v1 的说明换成 v2 结果；在这台电脑上执行 §8 的 8d 格，让新输出嵌进 notebook）；
   - README 的状态说明和 `docs/clam-setup-log.md`。
-- [ ] 全部做完后删掉这个文件，或者把已完成的项打勾留作记录。
+- [x] 全部做完后删掉这个文件，或者把已完成的项打勾留作记录。（2026-10-10 全部完成，打勾留档）
