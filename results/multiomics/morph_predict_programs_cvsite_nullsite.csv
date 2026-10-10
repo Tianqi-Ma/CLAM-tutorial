@@ -1,0 +1,3 @@
+program,genes,R2_label,R2_morph,R2_label_morph,dR2_morph_beyond_label
+"CYT（GZMA, PRF1）","GZMA,PRF1",-0.0397,0.011,-0.0008,0.039
+"增殖（MKI67, TOP2A, BIRC5, CCNB1, CDK1, MCM2）","MKI67,TOP2A,BIRC5,CCNB1,CDK1,MCM2",0.2817,0.0172,0.2532,-0.0284

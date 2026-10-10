@@ -7,15 +7,16 @@
 
 复核第一轮结果时发现三件事需要在数据机上确认，原因写在 notebook §5.4、§7、§8 和 `docs/clam-setup-log.md` §26。
 
-- [ ] **0. 拉取更新**：`git pull`。
-- [ ] **1. 核对旧实验是否都训练完**（几秒）。开了早停时 checkpoint 会在训练中途写出，"有 checkpoint"不等于"这一折跑完了"。
+- [x] **0. 拉取更新**：`git pull`。
+- [x] **1. 核对旧实验是否都训练完**（几秒）。开了早停时 checkpoint 会在训练中途写出，"有 checkpoint"不等于"这一折跑完了"。
   在 `E:\Projects\DP\CLAM` 下：
   ```
   ls results/luad_lusc_CLAM_sb_s1/split_*_results.pkl results/luad_lusc_CLAM_sb_strict_s1/split_*_results.pkl
   ```
   - 两个实验应各有 5 个文件（split_0 到 split_4）。
   - **缺哪一折，就说明那一折的 checkpoint 可能来自没训练完的模型**：用 `scripts/_run_site_training.sh` 的写法（认 `split_{k}_results.pkl`）重训那一折，再重跑 `eval.py` 和 `eval_cv_summary.py`。
-- [ ] **2. 中心混杂检验：免疫信号是不是医院造成的**（每个约 10–20 分钟）。
+  - ✅ 2026-10-11 完成：MC150 缺 fold 2/3/4、strict150 缺 fold 1/3，全部用 `scripts/_retrain_missing.sh`（认 results.pkl、每折 3 次重试）补训完成，eval 与 cv_summary 已重跑。补训后 strict150 0.846±0.073 / 患者级 0.775（几乎没动），MC150 0.792±0.147（fold 2/3 从 0.55/0.64 回到 0.69/0.63）。
+- [x] **2. 中心混杂检验：免疫信号是不是医院造成的**（每个约 10–20 分钟）。
   ```
   python scripts/analysis_morph_predict.py
   python scripts/analysis_morph_predict.py --null site
@@ -25,15 +26,18 @@
   - 后两条的产物带 `_nullsite`、`_cvsite_nullsite` 后缀，不会覆盖默认结果。
   - 看 `results/multiomics/morph_log_cvsite_nullsite.txt`：如果 T/NK 基因（IL18RAP、KLRD1、GZMB、NKG7 等）和 CYT 仍明显超出零分布，"形态里能看出免疫浸润"才站得住；
     如果大部分消失，就要把 notebook §8 的这条结论改成"由中心效应驱动"。
-- [ ] **3. 换两张 40× 的 LUSC 热图**（几分钟）。现在两张 LUSC 示例都是 20× 切片，而模型学到了"20× → LUSC"。
+  - ✅ 2026-10-11 完成：新规则下合成数据误报 40/40 → 2/40。真实数据：默认 688 个超标（随机预期 ~149）、`--null site` 491 个、`--cv site --null site` 636 个但效应量大缩（CYT +0.123 → +0.011）；GPR25 / IL18RAP / GZMB / KLRD1 仍显著。结论改成"免疫信号存在但弱，第一轮效应量被中心效应放大"。
+- [x] **3. 换两张 40× 的 LUSC 热图**（几分钟）。现在两张 LUSC 示例都是 20× 切片，而模型学到了"20× → LUSC"。
   ```
   python scripts/make_heatmap.py TCGA-18-4083-01Z-00-DX1 E:/Projects/DP/CLAM/results/luad_lusc_CLAM_sb_strict_s1/s_0_checkpoint.pt results/heatmaps
   python scripts/make_heatmap.py TCGA-43-3394-01Z-00-DX1 E:/Projects/DP/CLAM/results/luad_lusc_CLAM_sb_strict_s1/s_4_checkpoint.pt results/heatmaps
   ```
   - 两张切片都在对应折的测试集里（fold 0 p=0.96，fold 4 p=0.96）。
   - 画完后把 notebook §7 代码格里显示的 LUSC 图换成其中一张，两张 20× 的可以留着当"倍率捷径"的反例。
+  - ✅ 2026-10-11 完成：两张 40× LUSC 热图已画，notebook §7 已换成 TCGA-18-4083（20× 旧图留作倍率捷径反例）。
 - [ ] **4.（可选）CLAM 嵌入版本**：`analysis_multiomics.py`、`analysis_morph_predict.py`、`analysis_cox.py` 都加 `--embedding clam` 跑一遍，产物带 `_clam` 后缀。
-- [ ] **5. 提交并推送**：`results/multiomics/`、`results/heatmaps/`、可能重训的 eval 结果；按第 2 步的结论改 notebook §8"v2 多组学结果"里免疫那一条和 README 状态说明。
+  - 跳过：strict150 的 fold 1/3 checkpoint 是补训后的，而 `clam_fold*.csv` 嵌入还是旧 checkpoint 提的，空间不一致；要用得先重提嵌入，收益不足以抵成本，留作已知限制。
+- [x] **5. 提交并推送**：`results/multiomics/`、`results/heatmaps/`、可能重训的 eval 结果；按第 2 步的结论改 notebook §8"v2 多组学结果"里免疫那一条和 README 状态说明。
 
 ---
 
