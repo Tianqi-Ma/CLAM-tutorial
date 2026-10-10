@@ -1,11 +1,44 @@
-# 待办：在数据所在的电脑上完成（2026-10 审计后）
+# 待办：在数据所在的电脑上完成
 
-这份清单在存数据的 Windows 电脑上（`E:\Projects\DP\`）用。按顺序做，每一步都写了怎么判断有没有跑对。
-审计的来龙去脉见 [README](README.md) 和 [docs/clam-setup-log.md](docs/clam-setup-log.md) 第 24 节。
+这份清单在存数据的 Windows 电脑上（`E:\Projects\DP\`）用。下面的命令默认已经 `conda activate clam_latest`，
+当前目录是 `E:\Projects\DP\CLAM-tutorial`（第 1 步在 `E:\Projects\DP\CLAM`）。
 
-下面的命令默认已经 `conda activate clam_latest`，当前目录是 `E:\Projects\DP\CLAM-tutorial`。
+## 第二轮（2026-10-10 复核后新增）
+
+复核第一轮结果时发现三件事需要在数据机上确认，原因写在 notebook §5.4、§7、§8 和 `docs/clam-setup-log.md` §26。
+
+- [ ] **0. 拉取更新**：`git pull`。
+- [ ] **1. 核对旧实验是否都训练完**（几秒）。开了早停时 checkpoint 会在训练中途写出，"有 checkpoint"不等于"这一折跑完了"。
+  在 `E:\Projects\DP\CLAM` 下：
+  ```
+  ls results/luad_lusc_CLAM_sb_s1/split_*_results.pkl results/luad_lusc_CLAM_sb_strict_s1/split_*_results.pkl
+  ```
+  - 两个实验应各有 5 个文件（split_0 到 split_4）。
+  - **缺哪一折，就说明那一折的 checkpoint 可能来自没训练完的模型**：用 `scripts/_run_site_training.sh` 的写法（认 `split_{k}_results.pkl`）重训那一折，再重跑 `eval.py` 和 `eval_cv_summary.py`。
+- [ ] **2. 中心混杂检验：免疫信号是不是医院造成的**（每个约 10–20 分钟）。
+  ```
+  python scripts/analysis_morph_predict.py
+  python scripts/analysis_morph_predict.py --null site
+  python scripts/analysis_morph_predict.py --cv site --null site
+  ```
+  - 第一条重跑默认设置：判定规则已改成"每个基因和自己的零分布比"，旧的 `morph_predict_r2.csv` 要按新规则更新。
+  - 后两条的产物带 `_nullsite`、`_cvsite_nullsite` 后缀，不会覆盖默认结果。
+  - 看 `results/multiomics/morph_log_cvsite_nullsite.txt`：如果 T/NK 基因（IL18RAP、KLRD1、GZMB、NKG7 等）和 CYT 仍明显超出零分布，"形态里能看出免疫浸润"才站得住；
+    如果大部分消失，就要把 notebook §8 的这条结论改成"由中心效应驱动"。
+- [ ] **3. 换两张 40× 的 LUSC 热图**（几分钟）。现在两张 LUSC 示例都是 20× 切片，而模型学到了"20× → LUSC"。
+  ```
+  python scripts/make_heatmap.py TCGA-18-4083-01Z-00-DX1 E:/Projects/DP/CLAM/results/luad_lusc_CLAM_sb_strict_s1/s_0_checkpoint.pt results/heatmaps
+  python scripts/make_heatmap.py TCGA-43-3394-01Z-00-DX1 E:/Projects/DP/CLAM/results/luad_lusc_CLAM_sb_strict_s1/s_4_checkpoint.pt results/heatmaps
+  ```
+  - 两张切片都在对应折的测试集里（fold 0 p=0.96，fold 4 p=0.96）。
+  - 画完后把 notebook §7 代码格里显示的 LUSC 图换成其中一张，两张 20× 的可以留着当"倍率捷径"的反例。
+- [ ] **4.（可选）CLAM 嵌入版本**：`analysis_multiomics.py`、`analysis_morph_predict.py`、`analysis_cox.py` 都加 `--embedding clam` 跑一遍，产物带 `_clam` 后缀。
+- [ ] **5. 提交并推送**：`results/multiomics/`、`results/heatmaps/`、可能重训的 eval 结果；按第 2 步的结论改 notebook §8"v2 多组学结果"里免疫那一条和 README 状态说明。
 
 ---
+
+## 第一轮（2026-10-10 已完成，打勾留档）
+
 
 ## 第 0 步：准备（几分钟）
 
@@ -48,7 +81,7 @@
   - **如果打印"缺失不平衡，生存分析不可用"**，说明第 1 步没取到随访记录。先停下排查，不要加 `--force`。
 - [x] `python scripts/analysis_cox.py`
 
-⚠️ **暂时不要跑带 `--embedding clam` 的版本**：它的输出文件名和默认版本一样，会把结果覆盖掉。需要时先给脚本的输出文件名加后缀。
+~~⚠️ 暂时不要跑带 `--embedding clam` 的版本~~（第二轮已修：clam 模式的产物加 `_clam` 后缀，不再覆盖默认结果）
 
 这一步也可以直接在 notebook 里做：主 notebook §8 末尾那一格（"8d. v2 重跑"）就是第 1、3、4 步的全部命令。
 

@@ -511,3 +511,33 @@ Windows 的 DataLoader worker→主进程共享内存走页面文件，16GB 内�
 - 教训一：两个 GPU 任务并发（embed + 训练）把 Windows commit 限额打爆，fold 0/1 段错误（exit 139）——且 CLAM 在验证集改善时训练中途就存 checkpoint，"有 checkpoint"≠"训练完成"（fold 0 只跑到 epoch 13）。真正的完成标志是 `split_i_results.pkl`。
 - 教训二（exit 139 根因深挖）：串行之后 fold 0 又在 epoch 14 准时崩了一次。实测 commit 限额 28.1GB 只剩 2.6GB 空闲，而训练进程自己 commit 了 8.1GB——大头是 **WDDM 下显存占用兑现为 commit charge**：bag 大小悬殊（7k~98k patch），CUDA 缓存分配器的保留块随 epoch 数碎片化增长，直到系统无 commit 可给。修复：`core_utils.py` 的 train/validate 循环每 epoch 结束 `torch.cuda.empty_cache()`（CLAM 的 `torch.load` 此前已打过 `mmap=True` 补丁，所以 bag 读入不占 commit，问题只剩显存侧）。加补丁后重跑通过。同机教训汇总：GPU 任务串行 + 每 epoch empty_cache + torch.load mmap + workers≤1。
 - 结果（带补丁重跑 fold 0/1 各 52 epoch、early stopping 正常触发后评估）：每折 AUC 0.738 / 0.640 / 0.582 / 0.764 / 0.778（0.700±0.085）；池化切片级 **0.647**；患者级 **0.647 [0.553, 0.736]**。对比按患者分组（0.783 / 0.775 [0.70, 0.85]）：**约 0.13 个 AUC 来自"认医院"**，剩余 0.647 仍高于随机（CI 下限 0.55）——形态有真实的、不依赖中心的亚型信号，但账面数字虚高明显。
+
+## 26. 第一轮结果复核（2026-10-10）
+
+只读第一轮推上来的结果文件（fold_*.csv、slide_mpp.csv、rna_files.csv、clinical.json、TCGA-CDR.csv、各 run_log）做复核，没有重跑训练或表达分析。
+
+**确认没问题的**
+- 补全 follow_ups 后，v2 从 GDC 记录算出的总生存与 TCGA-CDR 在 142 个共同患者上完全一致（事件和天数一个不差），缺失的 2 人两边相同。v1 的生存问题确实只是下载时漏字段。
+- 167 个 RNA 文件 = 150 原发 + 16 癌旁正常 + 1 复发。按 Windows 上 glob 的读取顺序推算，v1 给 11 个患者（7 LUAD / 4 LUSC）用的是癌旁正常样本。
+- 新热图标题的概率与 `results/eval_strict150/fold_*.csv` 一致，且都用了切片所在测试折的模型。
+
+**需要更正或补充的**
+- §25"约 0.13 个 AUC 来自认医院"说过头了。同一批患者上配对 bootstrap，按患者分组比按中心分组高 0.128（95% CI 0.04–0.22，只对患者重抽样）。
+  这个差距同时包含"靠认医院拿分"和"新医院染色不同、泛化变差"两种成分，这个实验分不开。
+- **倍率捷径**：`slide_mpp.csv` 里 8 张 ~20× 切片有 7 张是 LUSC。两种交叉验证下，8 张全被判成 LUSC，唯一一张 20× 的 LUAD（TCGA-75-7030）得到 p(LUSC)=0.94。
+  按中心分组时，20× 的 LUSC 判对 86%，40× 的 LUSC 只有 53%。去掉这 8 张，严格折 / 中心折的患者级 AUC 为 0.768 / 0.631，只比全体低 0.01–0.02。
+  §25 选的两张 LUSC 示例热图（TCGA-60-2723、TCGA-60-2726）恰好都是 20× 切片。
+- **免疫信号还没过中心混杂检验**：v2 的 morph_predict 用随机分折 + 亚型内打乱，而 meanpool 主成分 30–58% 的方差可由中心解释。
+  合成数据实测：40 个只受中心影响的基因被这个检验全部判为"超过零分布"；改用中心内打乱后仍有 17 个漏网，原因是全基因组共用一个阈值，
+  而受中心影响的基因自己的零分布本来就高。改为"每个基因的实际 ΔR² 减去它自己的置换均值"后，降到 2/40，全基因组阳性约 1%（与随机预期一致）。
+- **早停与 checkpoint**：§23 和 notebook §5.4 的"checkpoint 只在折末保存，有 checkpoint = 这折完成"不对。开了 `--early_stopping` 时 CLAM 在验证集 loss 创新低时就写 checkpoint（§25 已发现）。
+  所以 MC150 和 strict150 中如果有折曾中途崩溃又被守卫跳过，用的就是没训练完的模型——需要在数据机上检查每折是否都有 `split_{k}_results.pkl`。
+- `eval_cv_summary.py` 在按中心分组的结果上会打印"没见过的中心样本太少…需按中心分组重训"，自相矛盾；已改为按情况输出。
+- `results/archive_v1/heatmaps_strict150/` 里其实是 MC150 fold-4 模型的旧图，已改名为 `heatmaps_mc150/`。
+- notebook 的 8d、6b 两格之前有输出但没执行过（execution_count 为空），输出是日志内容。已改成"默认不重跑、只读日志"，代码与输出一致。
+
+**脚本改动**
+- `eval_cv_summary.py`：按倍率拆开报告、去掉 20× 后的 AUC、`--compare` 两套交叉验证的配对 bootstrap。
+- `analysis_morph_predict.py`：`--cv site`、`--null site`，判定改为每个基因和自己的零分布比；产物按设置加后缀。
+- `analysis_multiomics.py`、`analysis_cox.py`：`--embedding clam` 的产物加 `_clam` 后缀，不再覆盖默认结果。
+- 以上改动在合成数据上跑通；真实数据上的第二轮待办见 `TODO.md`。

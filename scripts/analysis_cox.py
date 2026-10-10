@@ -15,7 +15,7 @@ v2：
     以及 ΔC = C(临床+形态) − C(临床) 在各次重复上的分布；另对第一次重复做患者 bootstrap 给 95% 区间；
   - 风险分组阈值取训练折风险分的中位数；
   - 对全数据临床模型做比例风险假设检验（Schoenfeld 残差，rank 时间变换）。
-产物: results/survival/cox_summary.txt, km_risk_groups.png, cox_log.txt
+产物: results/survival/cox_summary.txt, km_risk_groups.png, cox_log.txt（--embedding clam 时加 _clam 后缀）
 用法: python scripts/analysis_cox.py [--embedding meanpool|clam] [--n-pc 5] [--n-rep 20] [--force]
 """
 import argparse
@@ -45,7 +45,8 @@ ap.add_argument('--penalizer', type=float, default=0.1)
 ap.add_argument('--force', action='store_true')
 args = ap.parse_args()
 OUT = RESULTS / 'survival'
-log_to(OUT / 'cox_log.txt')
+TAG = '' if args.embedding == 'meanpool' else '_clam'      # clam 模式的产物加后缀，不覆盖默认结果
+log_to(OUT / f'cox_log{TAG}.txt')
 
 # ---------- 数据 ----------
 tab = clinical_table(args.source)
@@ -178,11 +179,11 @@ ax.set_xlabel('年')
 ax.set_ylabel('总生存概率')
 ax.set_ylim(0, 1.02)
 fig.tight_layout()
-fig.savefig(OUT / 'km_risk_groups.png', dpi=110, bbox_inches='tight')
+fig.savefig(OUT / f'km_risk_groups{TAG}.png', dpi=110, bbox_inches='tight')
 plt.close(fig)
 print(f'\n风险分组: 高 {len(hi)} / 低 {len(lo)}，log-rank p={lr.p_value:.3g}')
 
-with open(OUT / 'cox_summary.txt', 'w', encoding='utf-8') as f:
+with open(OUT / f'cox_summary{TAG}.txt', 'w', encoding='utf-8') as f:
     f.write(f'{flag}分析集 n={len(d)}，事件 {n_ev}；嵌入 {args.embedding}；{len(reps)} 次重复 × 5 折\n\n')
     f.write('== 全数据临床 Cox（以亚型分层）==\n')
     f.write(full.summary[['exp(coef)', 'exp(coef) lower 95%', 'exp(coef) upper 95%', 'p']].round(3).to_string() + '\n\n')
@@ -191,4 +192,4 @@ with open(OUT / 'cox_summary.txt', 'w', encoding='utf-8') as f:
         f.write(f"{name}: 每折 {np.mean(fold_c[name]):.3f} ± {np.std(fold_c[name], ddof=1):.3f}，池化 {np.mean(pooled[name]):.3f}\n")
     f.write(f'ΔC 均值 {dC.mean():+.3f}{rng_txt}；bootstrap 95% {ci(boot[:, 1] - boot[:, 0])}\n')
     f.write(f'风险分组 KM log-rank p={lr.p_value:.3g}\n')
-print('✅ 汇总 → cox_summary.txt')
+print(f'✅ 汇总 → cox_summary{TAG}.txt')

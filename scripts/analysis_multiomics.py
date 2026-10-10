@@ -11,7 +11,8 @@ v1 的问题与 v2 的改法：
   - 预测：v1 只看"形态 → marker"的 R²。可 marker 本身就是亚型标志，形态嵌入又带着亚型，R² 高低主要反映亚型。
     v2 同时给出 只用亚型标签 / 只用形态 / 亚型+形态 三个模型，ΔR² = 亚型+形态 − 只用亚型 才是"形态在亚型之外"的信息；
     交叉验证有随机 5 折和按组织来源中心（TSS）分组两种，后者检验结论是不是靠中心特有的染色/批次撑起来的。
-产物: results/multiomics/markers_boxplot.png, morph_vs_expr.png, morph_marker_assoc.csv, morph_marker_predict.csv
+产物: results/multiomics/markers_boxplot.png, morph_vs_expr.png, morph_marker_assoc.csv, morph_marker_predict.csv, run_log.txt
+      （--embedding clam 时文件名加 _clam 后缀，且不做只在同一空间里才有意义的 PC 关联）
 用法: python scripts/analysis_multiomics.py [--embedding meanpool|clam] [--n-pc 10] [--allow-ambiguous]
 """
 import argparse
@@ -37,7 +38,8 @@ ap.add_argument('--allow-ambiguous', action='store_true', help='没有 rna_files
 args = ap.parse_args()
 OUT = RESULTS / 'multiomics'
 OUT.mkdir(parents=True, exist_ok=True)
-log_to(OUT / 'run_log.txt')
+TAG = '' if args.embedding == 'meanpool' else '_clam'      # clam 模式的产物加后缀，不覆盖默认结果
+log_to(OUT / f'run_log{TAG}.txt')
 MARKERS = {'NKX2-1': 'LUAD（TTF-1）', 'NAPSA': 'LUAD（Napsin A）', 'TP63': 'LUSC（p40/p63）',
            'KRT5': 'LUSC（CK5/6）', 'KRT6A': 'LUSC（CK5/6）', 'SOX2': 'LUSC'}
 ALPHAS = np.logspace(-2, 4, 25)
@@ -65,7 +67,7 @@ for ax, g in zip(np.atleast_1d(axes), markers):
     print(f'  {g:7s} {MARKERS[g]:14s}: LUAD {a.median():.2f} vs LUSC {b.median():.2f}, p={p:.1e}')
 fig.suptitle('已知 LUAD / LUSC marker 在标签分组下的表达（方向对 = 标签和表达数据对得上）', fontsize=10)
 fig.tight_layout()
-fig.savefig(OUT / 'markers_boxplot.png', dpi=110, bbox_inches='tight')
+fig.savefig(OUT / f'markers_boxplot{TAG}.png', dpi=110, bbox_inches='tight')
 plt.close(fig)
 
 
@@ -177,7 +179,7 @@ for gi, g in enumerate(markers):
                      'R2_label_morph': res['both'], 'dR2_morph_beyond_label': res['both'] - res['label']})
         print(f"  {g:7s} [{sname}] 亚型 {res['label']:+.2f} | 形态 {res['morph']:+.2f} | 亚型+形态 {res['both']:+.2f}"
               f" → 形态在亚型之外 ΔR²={res['both'] - res['label']:+.3f}")
-pd.DataFrame(rows).round(4).to_csv(OUT / 'morph_marker_predict.csv', index=False)
+pd.DataFrame(rows).round(4).to_csv(OUT / f'morph_marker_predict{TAG}.csv', index=False)
 print('  读法: "形态" 一栏接近 "亚型" 一栏，说明形态能预测 marker 主要是因为它认得亚型；ΔR² 才是额外信息。')
 
 # ---------- 6. 图 ----------

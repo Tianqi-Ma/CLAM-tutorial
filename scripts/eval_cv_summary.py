@@ -9,7 +9,10 @@ eval.py 的 summary.csv 只有"每折 AUC 再取平均"。这里补上：
   4. 组织来源中心（TSS）混杂：本数据集每个中心只贡献一种亚型。统计测试切片所在中心是否在训练折出现过，
      并分别计算"见过的中心 / 没见过的中心"上的 AUC。模型可能部分在认"哪家医院的染色"，
      严格评估应该用按中心分组的划分（make_strict_splits.py --group-by site，Howard et al. 2021 Nat Commun）。
-用法: python scripts/eval_cv_summary.py [--eval-dir results/eval_strict150] [--k 5]
+  5. 扫描倍率（有 results/tcga/slide_mpp.csv 时）：按 ~20× / ~40× 分别看预测，并给出去掉 ~20× 切片后的 AUC。
+     本数据集 8 张 ~20× 切片里 7 张是 LUSC，倍率本身就是一条可被模型利用的捷径。
+  6. --compare 另一个 eval 目录：同一批患者上两套交叉验证的患者级 AUC 差值，配对 bootstrap 95% 区间。
+用法: python scripts/eval_cv_summary.py [--eval-dir results/eval_strict150] [--k 5] [--compare results/eval_site150]
 """
 import argparse
 import sys
@@ -26,18 +29,40 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--eval-dir', default=str(ROOT / 'results' / 'eval_strict150'))
 ap.add_argument('--k', type=int, default=5)
 ap.add_argument('--n-boot', type=int, default=2000)
+ap.add_argument('--compare', default=None, help='另一个 eval 目录：报告两者患者级 AUC 之差（配对 bootstrap）')
 args = ap.parse_args()
 
 ds = load_dataset().set_index('slide_id')
-rows = []
-for k in range(args.k):
-    f = pd.read_csv(Path(args.eval_dir) / f'fold_{k}.csv')
-    f['fold'] = k
-    rows.append(f)
-P = pd.concat(rows, ignore_index=True)
-P['case_id'] = P['slide_id'].map(ds['case_id'])
-P['tss'] = P['slide_id'].map(ds['tss'])
-P['Y'] = P['Y'].astype(int)
+
+
+def load_folds(eval_dir):
+    rows = []
+    for k in range(args.k):
+        f = pd.read_csv(Path(eval_dir) / f'fold_{k}.csv')
+        f['fold'] = k
+        rows.append(f)
+    P = pd.concat(rows, ignore_index=True)
+    P['case_id'] = P['slide_id'].map(ds['case_id'])
+    P['tss'] = P['slide_id'].map(ds['tss'])
+    P['Y'] = P['Y'].astype(int)
+    return P
+
+
+def patient_level(P):
+    return P.groupby('case_id').agg(Y=('Y', 'first'), p=('p_1', 'mean'))
+
+
+def boot_auc(pat, n_boot, seed=0):
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(n_boot):
+        s = pat.iloc[rng.integers(0, len(pat), len(pat))]
+        if s['Y'].nunique() == 2:
+            out.append(roc_auc_score(s['Y'], s['p']))
+    return np.quantile(out, 0.025), np.quantile(out, 0.975)
+
+
+P = load_folds(args.eval_dir)
 n_unique = P['slide_id'].nunique()
 print(f'{args.eval_dir}: {len(P)} 条预测 / {n_unique} 张不同切片 / {P["case_id"].nunique()} 个患者')
 if n_unique < len(P):
@@ -49,16 +74,10 @@ per_fold = pd.Series({k: roc_auc_score(g['Y'], g['p_1']) for k, g in P.groupby('
 print(f"\n每折 AUC: {' / '.join(f'{v:.3f}' for v in per_fold)} → 均值 {per_fold.mean():.3f} ± {per_fold.std(ddof=1):.3f}")
 print(f"池化切片级 AUC: {roc_auc_score(P['Y'], P['p_1']):.3f}（n={len(P)}）")
 
-pat = P.groupby('case_id').agg(Y=('Y', 'first'), p=('p_1', 'mean'))
+pat = patient_level(P)
 auc_pat = roc_auc_score(pat['Y'], pat['p'])
-rng = np.random.default_rng(0)
-boot = []
-for _ in range(args.n_boot):
-    s = pat.iloc[rng.integers(0, len(pat), len(pat))]
-    if s['Y'].nunique() == 2:
-        boot.append(roc_auc_score(s['Y'], s['p']))
-print(f'患者级 AUC: {auc_pat:.3f}，bootstrap 95% 区间 [{np.quantile(boot, 0.025):.3f}, {np.quantile(boot, 0.975):.3f}]'
-      f'（n={len(pat)}）')
+lo, hi = boot_auc(pat, args.n_boot)
+print(f'患者级 AUC: {auc_pat:.3f}，bootstrap 95% 区间 [{lo:.3f}, {hi:.3f}]（n={len(pat)}）')
 
 pred = (P['p_1'] >= 0.5).astype(int)
 sens = ((pred == 1) & (P['Y'] == 1)).sum() / (P['Y'] == 1).sum()
@@ -75,8 +94,47 @@ print(f'\n== 组织来源中心（TSS）==\n{ds["tss"].nunique()} 个中心，�
 if P['slide_id'].nunique() == len(P):
     seen = P.apply(lambda r: (P.loc[P['fold'] != r['fold'], 'tss'] == r['tss']).any(), axis=1)
     print(f'测试切片所在中心在其他折（训练侧）出现过: {int(seen.sum())}/{len(P)}')
-    for flag, name in ((True, '见过的中心'), (False, '没见过的中心')):
-        sub = P[seen == flag]
-        auc = roc_auc_score(sub['Y'], sub['p_1']) if sub['Y'].nunique() == 2 else float('nan')
-        print(f"  {name}: n={len(sub)}（LUAD {int((sub['Y'] == 0).sum())} / LUSC {int((sub['Y'] == 1).sum())}），AUC {auc:.3f}")
-    print('  没见过的中心样本太少，区间很宽，不能据此下结论；要回答"模型是否在认中心"，需按中心分组重训。')
+    if seen.sum() == 0:
+        print('  这是按中心分组的划分：所有测试切片的中心都没在训练侧出现过，上面的 AUC 就是"换到新医院"的成绩。')
+    else:
+        for flag, name in ((True, '见过的中心'), (False, '没见过的中心')):
+            sub = P[seen == flag]
+            auc = roc_auc_score(sub['Y'], sub['p_1']) if sub['Y'].nunique() == 2 else float('nan')
+            print(f"  {name}: n={len(sub)}（LUAD {int((sub['Y'] == 0).sum())} / LUSC {int((sub['Y'] == 1).sum())}），AUC {auc:.3f}")
+        print('  没见过的中心样本少时区间很宽，不能据此下结论；要回答"模型是否在认中心"，'
+              '看按中心分组重训的结果（make_strict_splits.py --group-by site）。')
+
+# 扫描倍率
+mpp_csv = ROOT / 'results' / 'tcga' / 'slide_mpp.csv'
+if mpp_csv.exists():
+    mpp = pd.read_csv(mpp_csv).set_index('slide_id')['mpp']
+    P['x20'] = P['slide_id'].map(mpp) > 0.35
+    print(f'\n== 扫描倍率（{mpp_csv.name}）==')
+    for flag, name in ((True, '~20×'), (False, '~40×')):
+        for y, lab in ((0, 'LUAD'), (1, 'LUSC')):
+            sub = P[(P['x20'] == flag) & (P['Y'] == y)]
+            if len(sub):
+                print(f"  {name} {lab}: n={len(sub)}，平均 p(LUSC) {sub['p_1'].mean():.3f}，判对 {(sub['Y_hat'] == y).mean():.0%}")
+    if P['x20'].any():
+        Q = P[~P['x20']]
+        qpat = patient_level(Q)
+        qlo, qhi = boot_auc(qpat, args.n_boot)
+        print(f"  去掉 {int(P['x20'].sum())} 张 ~20× 切片: 切片级 AUC {roc_auc_score(Q['Y'], Q['p_1']):.3f}（n={len(Q)}），"
+              f"患者级 {roc_auc_score(qpat['Y'], qpat['p']):.3f} [{qlo:.3f}, {qhi:.3f}]")
+        print('  如果 ~20× 的 LUAD 也被判成 LUSC，说明模型学到了"倍率 → 亚型"的捷径。')
+
+# 两套交叉验证的配对比较
+if args.compare:
+    C = patient_level(load_folds(args.compare))
+    j = pat.join(C, rsuffix='_c', how='inner')
+    d0 = roc_auc_score(j['Y'], j['p']) - roc_auc_score(j['Y'], j['p_c'])
+    rng = np.random.default_rng(1)
+    diffs = []
+    for _ in range(args.n_boot):
+        s = j.iloc[rng.integers(0, len(j), len(j))]
+        if s['Y'].nunique() == 2:
+            diffs.append(roc_auc_score(s['Y'], s['p']) - roc_auc_score(s['Y'], s['p_c']))
+    print(f"\n== 与 {args.compare} 配对比较（同一批 {len(j)} 个患者）==")
+    print(f'  患者级 AUC 差（本目录 − 对照）: {d0:+.3f}，配对 bootstrap 95% 区间 '
+          f'[{np.quantile(diffs, 0.025):+.3f}, {np.quantile(diffs, 0.975):+.3f}]')
+    print('  只对患者重抽样，没有把"重新训练一次结果会变多少"算进去，真实不确定性更大。')
